@@ -136,8 +136,8 @@ describe("the gated set: table and registration agree", () => {
 		// Fourteen after `pen-ink-toggle` and `pen-tools-cycle` both left the
 		// palette; fifteen with the toolbar and zoom bar on / off toggle (1.4.20),
 		// a new id, not the retired cycle. The exact count stops either retired
-		// command creeping back in.
-		expect(ALWAYS_COMMANDS).toHaveLength(15);
+		// command creeping back in. Handwriting-to-LaTeX adds the sixteenth.
+		expect(ALWAYS_COMMANDS).toHaveLength(16);
 	});
 });
 

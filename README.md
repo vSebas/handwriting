@@ -4,6 +4,14 @@ Handwrite, highlight, erase and lasso directly on your notes and PDFs. Your note
 
 Open a note and write. The note stays a `.md` file.
 
+**This fork adds offline handwriting-to-LaTeX using Hand-to-TeX.** Lasso an
+equation, recognize it on your device, review the result, and insert ordinary
+Obsidian math. Download the model once in Handwriting settings. No API key or
+local server is required. See [setup, iPad workflow, and compatibility](docs/math.md).
+The community installation instructions below refer to the upstream plugin;
+install this fork's build to use recognition. For BRAT, add `vSebas/handwriting`
+and select release `1.4.22-beta.1`.
+
 ## removing the plugin
 
 your ink is not stored "in" the markdown. it lives in a folder at your vault root, separate from the editor's text.
@@ -239,7 +247,7 @@ and i guarantee nothing will leave your device unless you press `Upload` button.
 * laser pointer
 * ocr / handwriting to text ( very soon )
 * searchable handwriting ( very soon )
-* handwriting to math/latex ( very soon )
+* handwriting to math/latex: available in this fork; see [setup](docs/math.md)
 * text boxes ;)
 * canvas mode
 * more custom colors

@@ -3770,6 +3770,12 @@ export class PdfInkController {
 		return this.selectionBounds(this.selectionPage) !== null;
 	}
 
+	/** Recognition uses annotation strokes only, on the page holding the lasso. */
+	selectedStrokesForMath(): InkStroke[] {
+		const ids = new Set(this.selected);
+		return this.strokes(this.selectionPage).filter(stroke => ids.has(stroke.id));
+	}
+
 	/**
 	 * Render the selected region - page and committed ink together - to a
 	 * PNG. The selection's bounding box, padded a little, is the crop.

@@ -8,6 +8,7 @@ export default defineConfig({
 	// at all - see test/obsidian-stub.ts.
 	resolve: {
 		alias: {
+			"handwriting:math-worker": fileURLToPath(new URL("./test/math-worker-stub.ts", import.meta.url)),
 			obsidian: fileURLToPath(new URL("./test/obsidian-stub.ts", import.meta.url)),
 		},
 	},

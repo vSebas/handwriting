@@ -3134,3 +3134,20 @@ body.handwriting-boox .handwriting-mobile-tool.is-pressed:not(.is-disabled) {
 
 /* Only Infinite Canvas note routers opt in; wheel input remains native. */
 .handwriting-no-momentum { touch-action: none; }
+.handwriting-math-modal textarea {
+	width: 100%;
+	font-family: var(--font-monospace);
+	resize: vertical;
+}
+
+.handwriting-math-preview {
+	min-height: 4em;
+	overflow-x: auto;
+	padding: var(--size-4-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+}
+
+.handwriting-math-modal .setting-item-control {
+	flex-wrap: wrap;
+}

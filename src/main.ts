@@ -1,4 +1,9 @@
 import { requestUrl, App, Command, MarkdownRenderChild, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, type SettingGroup, TAbstractFile, TFile, View, WorkspaceLeaf, normalizePath } from "obsidian";
+import { MathRecognitionModal } from "./math/MathRecognitionModal";
+import { mathInk } from "./math/MathRecognition";
+import { captureMathTarget } from "./math/MathInsertionTarget";
+import { handToTex } from "./math/HandToTex";
+import { MathModels } from "./math/MathModels";
 import {
 	clearGatedCommandAction,
 	clearGatedCommandActions,
@@ -1158,6 +1163,12 @@ export function bindRecoveryNotices(
 }
 
 export default class HandwritingPlugin extends Plugin {
+	private mathModal: MathRecognitionModal | null = null;
+	private mathModels: MathModels | null = null;
+	getMathModels(): MathModels {
+		return this.mathModels ??= new MathModels(this.app.vault.adapter,
+			this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`);
+	}
 	store!: PageStore;
 	settings: HandwritingSettings = { ...DEFAULT_SETTINGS };
 	/** Set at load: no settings file at all means a first-ever install. */
@@ -2990,6 +3001,31 @@ export default class HandwritingPlugin extends Plugin {
 				return true;
 			},
 		});
+		this.addCommand({
+			id: "recognize-selected-math",
+			name: "Lasso: convert handwriting to LaTeX",
+			checkCallback: (checking) => {
+				const surface = this.activeInkSurface();
+				if (!surface) return false;
+				if (!checking) {
+					try {
+						const ink = mathInk(surface.kind === "inline"
+							? surface.overlay.selectedStrokesForMath()
+							: surface.controller.selectedStrokesForMath());
+						const active = this.app.workspace.activeEditor;
+						const insert = surface.kind === "inline" && active
+							? captureMathTarget(active, () => this.app.workspace.activeEditor)
+							: undefined;
+						this.mathModal?.close();
+						this.mathModal = new MathRecognitionModal(this.app, ink, handToTex(this.getMathModels()), insert);
+						this.mathModal.open();
+					} catch (error) {
+						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read the selected ink."}`);
+					}
+				}
+				return true;
+			},
+		});
 		// Copy/paste ink, across notes too. The clipboard is the session's,
 		// never the system's: note-space coordinates mean nothing to other
 		// applications (the SVG export is for leaving the vault).
@@ -4612,6 +4648,8 @@ export default class HandwritingPlugin extends Plugin {
 		return true;
 	}
 	onunload(): void {
+		this.mathModal?.close();
+		this.mathModal = null;
 		// First, so that anything still waiting on onLayoutReady finds it set.
 		this.unloaded = true;
 		this.notePaper?.destroy();
@@ -6381,6 +6419,17 @@ export class HandwritingSettingTab extends PluginSettingTab {
 			},
 			{
 				type: "group",
+				heading: "Handwriting to LaTeX",
+				items: [
+					{
+						name: "Offline math recognition",
+						desc: "Download Hand-to-TeX model data from Hugging Face once (18.5 MB). Recognition then runs on this device without uploading handwriting. Lasso an expression and run Lasso: convert handwriting to LaTeX.",
+						render: (setting) => this.renderMathModelDownload(setting),
+					},
+				],
+			},
+			{
+				type: "group",
 				heading: "Storage",
 				items: [
 					{
@@ -6690,14 +6739,21 @@ export class HandwritingSettingTab extends PluginSettingTab {
 		}
 	}
 
-	/**
-	 * The Recalibrate button, on its own row in Developer since 1.4.20 took
-	 * the pressure switch it used to sit beside out of the tab.
-	 *
-	 * It runs exactly what the removed `pressure-recalibrate` command ran,
-	 * notice included: `resetPressureCalibration()` then the same "relearns
-	 * from your next strokes" text, word for word.
-	 */
+	private renderMathModelDownload(setting: Setting): void {
+		setting.addButton(button => button.setButtonText("Download model").onClick(async () => {
+			button.setDisabled(true);
+			try {
+				await this.plugin.getMathModels().download(message => setting.setDesc(message));
+				button.setButtonText("Download again");
+			} catch (error) {
+				setting.setDesc(error instanceof Error ? error.message : "Model download failed. Try again later.");
+			} finally {
+				button.setDisabled(false);
+			}
+		}));
+	}
+
+	/** The settings-only pressure reset keeps its original behavior and notice. */
 	private renderPressureRecalibrate(setting: Setting): void {
 		setting.addButton((btn) =>
 			btn.setButtonText("Recalibrate").onClick(() => {

@@ -16,7 +16,7 @@ export function canonicalBuildInputDigest(root = process.cwd()) {
 			files.push(relPath.split(path.sep).join("/"));
 		}
 	}
-	for (const input of ["src", "esbuild.config.mjs", "scripts/build-provenance.mjs", "package.json", "package-lock.json", "tsconfig.json"]) {
+	for (const input of ["src", "esbuild.config.mjs", "scripts/build-provenance.mjs", "scripts/math-worker.mjs", "THIRD_PARTY_NOTICES.md", "package.json", "package-lock.json", "tsconfig.json"]) {
 		collect(input);
 	}
 	const hash = createHash("sha256");

@@ -33,7 +33,7 @@ export interface PaletteCommand {
 }
 
 /**
- * The fifteen that stay registered whatever the setting says: everything the
+ * The sixteen that stay registered whatever the setting says: everything the
  * pen toolbar cannot do, plus the two nibs and the two input toggles, which
  * are the way BACK when the strip is hidden, and the toolbar and zoom bar
  * toggle, which is the way back when both bars are hidden.
@@ -65,6 +65,7 @@ export const ALWAYS_COMMANDS: readonly PaletteCommand[] = [
 	{ id: "delete-all-ink", name: "Delete all ink on this note" },
 	{ id: "delete-all-pdf-ink", name: "Delete all ink on this PDF" },
 	{ id: "copy-selected-ink", name: "Lasso: copy selection" },
+	{ id: "recognize-selected-math", name: "Lasso: convert handwriting to LaTeX" },
 	{ id: "cut-selected-ink", name: "Lasso: cut selection" },
 	{ id: "delete-selected-ink", name: "Lasso: delete selection" },
 	{ id: "paste-ink", name: "Lasso: paste" },

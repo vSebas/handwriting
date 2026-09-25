@@ -10517,6 +10517,12 @@ export class InkOverlayPlugin {
 		return !this.selection.isEmpty;
 	}
 
+	/** The same selection as ink copy; callers snapshot coordinates before async work. */
+	selectedStrokesForMath(): InkStroke[] {
+		const ids = new Set(this.selection.strokeIds);
+		return this.strokesHere().filter(stroke => ids.has(stroke.id));
+	}
+
 	/**
 	 * Copy the lasso selection to the session ink clipboard (roadmap:
 	 * copy/paste ink). Returns how many strokes were copied; 0 = no selection.
