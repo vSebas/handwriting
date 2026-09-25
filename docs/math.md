@@ -7,7 +7,7 @@ is needed. Printed PDF content and images are not recognized.
 
 ## Setup and use
 
-For BRAT, add `vSebas/handwriting` and select release `1.4.22-beta.1`. BRAT installs
+For BRAT, add `vSebas/handwriting` and select release `1.4.22-beta.2`. BRAT installs
 the three compiled files from the release; no source build is needed on the iPad.
 After enabling Handwriting, continue with the model download in step 2 below.
 This fork uses the same plugin ID as upstream and replaces its installed build.
@@ -27,8 +27,10 @@ This fork uses the same plugin ID as upstream and replaces its installed build.
    go. Write normally, then lasso one equation with Handwriting's existing tool.
 4. Run **Handwriting: Lasso: convert handwriting to LaTeX** from the command
    palette (or assign it a hotkey).
-5. Press **Recognize with Hand-to-TeX**, review the native MathJax preview, and
-   correct the editable LaTeX if necessary.
+5. Press **Recognize with Hand-to-TeX**. When several readings are available,
+   tap the closest of up to three preview buttons. Review the native MathJax
+   preview and correct the editable LaTeX if necessary. Selecting a candidate
+   only updates the review field; it does not insert into your note.
 6. Choose inline or display math and **Insert at saved cursor**, **Copy Markdown**,
    or **Copy LaTeX**. PDF annotations offer the copy actions.
 
@@ -73,6 +75,13 @@ to bound memory consumption and a 149-token output limit matching the upstream
 decoder. Highlighter strokes are ignored. Handwriting accuracy is model-dependent;
 review fractions, superscripts, signs, and symbol ambiguities before inserting.
 The model supplies no calibrated confidence estimate.
+
+Recognition uses a three-hypothesis beam search with a modest length penalty,
+keeping alternatives instead of committing immediately to each highest-scoring
+symbol. Candidates are ranked model suggestions, not guaranteed correct readings.
+Some selections produce fewer than three usable complete expressions. The same
+offline model is used; no retraining or improvement in accuracy on a handwriting
+benchmark is claimed. Comparing alternatives may take longer than the first beta.
 
 ## Developer checks
 

@@ -10,7 +10,7 @@ Obsidian math. Download the model once in Handwriting settings. No API key or
 local server is required. See [setup, iPad workflow, and compatibility](docs/math.md).
 The community installation instructions below refer to the upstream plugin;
 install this fork's build to use recognition. For BRAT, add `vSebas/handwriting`
-and select release `1.4.22-beta.1`.
+and select release `1.4.22-beta.2`, which offers up to three candidate readings.
 
 ## removing the plugin
 

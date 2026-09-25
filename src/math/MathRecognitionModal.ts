@@ -11,6 +11,8 @@ export class MathRecognitionModal extends Modal {
 	private status!: HTMLElement;
 	private source!: HTMLTextAreaElement;
 	private preview!: HTMLElement;
+	private candidatesEl!: HTMLElement;
+	private candidateButtons: { button: HTMLButtonElement; latex: string }[] = [];
 	private previewVersion = 0;
 	private abort = new AbortController();
 
@@ -30,6 +32,7 @@ export class MathRecognitionModal extends Modal {
 				this.pending = true;
 				button.setDisabled(true);
 				this.source.disabled = true;
+				for (const { button } of this.candidateButtons) button.disabled = true;
 				this.status.setText("Recognizing…");
 				try {
 					const result = await this.recognizer.recognize(this.ink, this.abort.signal, message => {
@@ -38,9 +41,10 @@ export class MathRecognitionModal extends Modal {
 					if (this.closed) return;
 					this.latex = result.latex;
 					this.source.value = result.latex;
-					this.status.setText(result.confidence === undefined
-						? "Review the expression before inserting or copying."
-						: `Recognition confidence: ${Math.round(result.confidence * 100)}%. Review the expression before inserting or copying.`);
+					this.showCandidates(result.candidates ?? [result.latex]);
+					this.status.setText(this.candidateButtons.length > 1
+						? "Choose the closest reading, then review or edit it before inserting."
+						: "Review the expression before inserting or copying.");
 					this.updatePreview();
 				} catch (error) {
 					if (!this.closed) this.status.setText(error instanceof Error ? error.message : "Recognition failed.");
@@ -49,11 +53,13 @@ export class MathRecognitionModal extends Modal {
 					if (!this.closed) {
 						button.setDisabled(false);
 						this.source.disabled = false;
+						for (const { button } of this.candidateButtons) button.disabled = false;
 					}
 				}
 			});
 		});
 		this.status = this.contentEl.createEl("p", { attr: { role: "status", "aria-live": "polite" } });
+		this.candidatesEl = this.contentEl.createDiv({ cls: "handwriting-math-candidates", attr: { role: "group", "aria-label": "Possible readings" } });
 		this.contentEl.createEl("p", { text: "LaTeX (editable)" });
 		this.source = this.contentEl.createEl("textarea", { attr: { "aria-label": "LaTeX expression", spellcheck: "false", rows: "5" } });
 		this.source.addEventListener("input", () => {
@@ -81,6 +87,31 @@ export class MathRecognitionModal extends Modal {
 		if (!this.insert) this.contentEl.createEl("p", { text: "Copy the result into a note or another math editor. PDF content itself is not converted." });
 	}
 
+	private showCandidates(candidates: string[]): void {
+		this.candidatesEl.empty();
+		this.candidateButtons = [];
+		if (candidates.length < 2) return;
+		this.candidatesEl.createEl("p", { text: "Possible readings — tap to select" });
+		for (const [index, latex] of candidates.slice(0, 3).entries()) {
+			const button = this.candidatesEl.createEl("button", { cls: "handwriting-math-candidate", attr: {
+				type: "button", "aria-label": `Use candidate ${index + 1}: ${latex}`, "aria-pressed": "false",
+			} });
+			button.disabled = this.pending;
+			button.createSpan({ cls: "handwriting-math-candidate-number", text: String(index + 1) });
+			const expression = button.createSpan({ cls: "handwriting-math-candidate-expression" });
+			try { expression.appendChild(renderMath(latex, false)); }
+			catch { expression.setText(latex); }
+			button.addEventListener("click", () => {
+				if (this.pending || this.closed) return;
+				this.latex = latex;
+				this.source.value = latex;
+				this.updatePreview();
+			});
+			this.candidateButtons.push({ button, latex });
+		}
+		void finishRenderMath().catch(() => { /* The editable LaTeX remains available. */ });
+	}
+
 	private async copy(raw: boolean): Promise<void> {
 		if (this.pending || this.closed) return;
 		try {
@@ -93,6 +124,7 @@ export class MathRecognitionModal extends Modal {
 	}
 
 	private updatePreview(): void {
+		for (const { button, latex } of this.candidateButtons) button.setAttribute("aria-pressed", String(latex === this.latex));
 		const version = ++this.previewVersion;
 		this.preview.empty();
 		if (!this.latex.trim()) return;
@@ -111,5 +143,6 @@ export class MathRecognitionModal extends Modal {
 		this.closed = true;
 		this.previewVersion++;
 		this.contentEl.empty();
+		this.candidateButtons = [];
 	}
 }

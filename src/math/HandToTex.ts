@@ -31,7 +31,18 @@ export function handToTex(models: MathModels): MathRecognizer {
 						if ("progress" in message) progress(message.progress);
 						else if ("error" in message) reject(new Error(message.error));
 						else {
-							try { resolve({ latex: normalizeLatex(message.latex) }); }
+							try {
+								const candidates: string[] = [];
+								for (const value of message.candidates ?? [message.latex]) {
+									try {
+										const latex = normalizeLatex(value);
+										if (!candidates.includes(latex)) candidates.push(latex);
+									} catch { /* An invalid alternative must not hide other usable readings. */ }
+									if (candidates.length === 3) break;
+								}
+								if (!candidates.length) throw new Error("No usable expression was recognized. Try a clearer selection.");
+								resolve({ latex: candidates[0]!, candidates });
+							}
 							catch (error) { reject(error); }
 						}
 					};

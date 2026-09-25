@@ -2,7 +2,7 @@ import type { InkStroke } from "../ink/Stroke";
 
 export type TracePoint = [x: number, y: number, time: number];
 export interface MathInk { traces: TracePoint[][] }
-export interface MathResult { latex: string; confidence?: number }
+export interface MathResult { latex: string; candidates?: string[]; confidence?: number }
 
 /** Copy the lasso's pen paths before any async work. Neither ink nor selection is modified. */
 export function mathInk(strokes: readonly InkStroke[]): MathInk {

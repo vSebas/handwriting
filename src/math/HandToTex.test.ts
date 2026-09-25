@@ -33,10 +33,23 @@ describe("offline recognition lifecycle", () => {
 		const worker = TestWorker.instances[0]!;
 		worker.onmessage!({ data: { progress: "Decoding" } });
 		worker.onmessage!({ data: { latex: "\\[x^2\\]" } });
-		await expect(h.promise).resolves.toEqual({ latex: "x^2" });
+		await expect(h.promise).resolves.toEqual({ latex: "x^2", candidates: ["x^2"] });
 		expect(h.progress).toHaveBeenCalledWith("Decoding");
 		expect(worker.terminate).toHaveBeenCalledOnce();
 		expect(h.revoke).toHaveBeenCalledWith("blob:test");
+	});
+	it("keeps distinct usable alternatives in model order", async () => {
+		const h = setup();
+		await Promise.resolve();
+		TestWorker.instances[0]!.onmessage!({ data: { latex: "x", candidates: ["", "$x$", "x", "y", "z", "w"] } });
+		await expect(h.promise).resolves.toEqual({ latex: "x", candidates: ["x", "y", "z"] });
+	});
+	it("rejects unusable alternatives and releases the worker", async () => {
+		const h = setup();
+		await Promise.resolve();
+		TestWorker.instances[0]!.onmessage!({ data: { latex: "", candidates: ["", "\\documentclass{article}"] } });
+		await expect(h.promise).rejects.toThrow("No usable expression");
+		expect(TestWorker.instances[0]!.terminate).toHaveBeenCalledOnce();
 	});
 	it("cancels an active worker when the review dialog closes", async () => {
 		const h = setup();

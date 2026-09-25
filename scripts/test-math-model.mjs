@@ -40,7 +40,7 @@ try {
 					if (event.data.progress) return;
 					clearTimeout(timer);
 					if (event.data.error) reject(new Error(event.data.error));
-					else resolve({ latex: event.data.latex, elapsedMs: Math.round(performance.now() - started) });
+					else resolve({ latex: event.data.latex, candidates: event.data.candidates, elapsedMs: Math.round(performance.now() - started) });
 				};
 				worker.postMessage({ ink: { traces }, encoder: decode(models.encoder), decoder: decode(models.decoder) });
 			});
@@ -48,5 +48,9 @@ try {
 	}, { source: bundle.outputFiles[0].text, models, traces });
 	if (requests.length) throw new Error(`Inference attempted external requests: ${requests.join(", ")}`);
 	if (result.latex.replace(/\s/g, "") !== "1+1") throw new Error(`Unexpected recognition: ${result.latex}`);
+	if (!Array.isArray(result.candidates) || result.candidates.length < 2 || result.candidates.length > 3
+		|| result.candidates[0] !== result.latex || new Set(result.candidates).size !== result.candidates.length) {
+		throw new Error(`Expected distinct ranked alternatives: ${JSON.stringify(result.candidates)}`);
+	}
 	console.log(JSON.stringify({ ...result, externalRequests: requests.length }));
 } finally { await browser.close(); }
