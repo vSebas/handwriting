@@ -6473,8 +6473,13 @@ export class HandwritingSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: "Recognition provider",
-						desc: "Use the on-device model or send selected handwriting to UniMERNet on your laptop.",
+						desc: "Hand-to-TeX is the default. Select UniMERNet to recognize selected handwriting on your laptop; follow the setup steps below.",
 						control: { type: "dropdown", key: "mathProvider", options: { "hand-to-tex": "Hand-to-TeX (on device)", unimernet: "UniMERNet (local service)" } },
+					},
+					{
+						name: "Set up UniMERNet",
+						aliases: ["UniMERNet setup", "install UniMERNet", "math recognition setup"],
+						render: setting => this.renderUniMERSetup(setting),
 					},
 					{
 						name: "UniMERNet service URL",
@@ -6516,7 +6521,7 @@ export class HandwritingSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Offline math recognition",
-						desc: "Download Hand-to-TeX model data from Hugging Face once (18.5 MB). Recognition then runs on this device without uploading handwriting. Lasso an expression and run Lasso: convert handwriting to LaTeX.",
+						desc: "Only for Hand-to-TeX: download its model data from Hugging Face once (18.5 MB). UniMERNet does not use this download. Lasso an expression and run Lasso: convert handwriting to LaTeX.",
 						render: (setting) => this.renderMathModelDownload(setting),
 					},
 				],
@@ -6846,6 +6851,19 @@ export class HandwritingSettingTab extends PluginSettingTab {
 			} finally {
 				button.setDisabled(false);
 			}
+		}));
+	}
+
+	private renderUniMERSetup(setting: Setting): void {
+		setting.setDesc(createFragment(fragment => {
+			const steps = fragment.createEl("ol");
+			steps.createEl("li", { text: "On a Windows laptop, download this fork's source and install uv. In PowerShell, open the source folder and run: powershell -ExecutionPolicy Bypass -File services\\unimernet\\setup.ps1. This installs Python and the model once; BRAT installs only the Obsidian plugin." });
+			steps.createEl("li", { text: "Keep that folder. In desktop Obsidian, set the UniMERNet service folder if it is not Documents\\handwriting. The plugin starts the installed service when Obsidian opens or when you press Test connection." });
+			steps.createEl("li", { text: "For iPad, set the service URL to http://<laptop Wi-Fi IP>:8765 and sync or copy the access token from desktop Handwriting settings. Keep the laptop awake with Obsidian open. Press Test connection on each device." });
+			fragment.createEl("a", {
+				text: "Full UniMERNet setup guide",
+				href: "https://github.com/vSebas/handwriting/blob/master/services/unimernet/README.md",
+			});
 		}));
 	}
 

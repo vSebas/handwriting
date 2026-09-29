@@ -27,9 +27,9 @@ Recognition images and LaTeX are not saved by the service.
 
 For BRAT, add `vSebas/handwriting` and select the published release. UniMERNet
 was added in `1.4.22-beta.3`; automatic laptop startup is `1.4.22-beta.4`.
-BRAT installs
-the three compiled files from the release; no source build is needed on the iPad.
-After enabling Handwriting, continue with the model download in step 2 below.
+Version `1.4.22-beta.5` adds setup instructions in Handwriting settings.
+BRAT installs the three compiled files from the release; no source build is needed
+on the iPad. Follow the model-download step below only if you choose Hand-to-TeX.
 This fork uses the same plugin ID as upstream and replaces its installed build.
 
 1. Build this fork with `npm ci` and `npm run build`. Copy `main.js`, `styles.css`,
