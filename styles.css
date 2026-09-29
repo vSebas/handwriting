@@ -3140,6 +3140,24 @@ body.handwriting-boox .handwriting-mobile-tool.is-pressed:not(.is-disabled) {
 	resize: vertical;
 }
 
+.handwriting-whole-note-list {
+	max-height: 45vh;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	padding: var(--size-4-2);
+}
+.handwriting-whole-note-region {
+	border-bottom: 1px solid var(--background-modifier-border);
+	padding: var(--size-4-2) 0;
+}
+.handwriting-whole-note-region img {
+	display: block;
+	max-width: 100%;
+	max-height: 120px;
+	background: white;
+	margin-bottom: var(--size-4-2);
+}
+
 .handwriting-math-preview {
 	min-height: 4em;
 	overflow-x: auto;

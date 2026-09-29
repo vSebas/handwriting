@@ -13,32 +13,37 @@ separate model loads only on the first text request and is installed only after
 the user explicitly runs `services/unimernet/setup-text.ps1`. Math-only users
 need not download it.
 
-## Next increment: review a whole note
+## Whole-note review in beta.7
 
-1. Collect pen strokes from the active Handwriting note without altering them.
-   Keep their note coordinates, bounds, stroke order and layer identity. Bound
-   the request size, and divide large pages into overlapping tiles.
-2. Group nearby strokes into candidate lines and regions. Give each region its
-   original image crop and position. Do not turn spatial order into a sentence
-   before the user reviews it.
-3. Offer **Text**, **Math**, and **Drawing / relationship** for each region.
-   Apply TrOCR to text lines and UniMERNet to equations. Try automatic type
-   suggestions only after measuring them against real handwritten notes; allow
-   the user to override every suggestion.
-4. Treat arrows and connectors as geometry, with a small detector for clear
-   straight arrows. Preserve ambiguous drawings as an image or untouched ink.
-   Do not infer causal or logical relationships from an arrow alone.
-5. Assemble a Markdown preview in reading order: prose as ordinary text,
-   equations as `$...$` or `$$...$$`, and reviewed arrows as Unicode `→`, `←`,
-   or `↔` where appropriate. Keep a visible source-region link for each block
-   during review. Never silently overwrite the original note.
-6. Let the user edit, reorder, split, merge, or leave regions as ink before
-   copying or inserting the result. On iPad, keep recognition on the laptop
-   with the same authenticated local service; the review UI stays in Obsidian.
+The command palette action **Transcribe all handwriting in this note** reads
+the active Markdown note's saved pen ink, groups it into horizontal regions,
+and shows the original crop for each region. Every region can be marked Text,
+Math / LaTeX, or Drawing / keep as ink. Text uses the optional TrOCR service;
+math uses the configured math provider. The user corrects each result and
+edits the assembled Markdown before appending it to the same note. It appends
+at the current end of the active editor, so existing text, image embeds, and
+ink remain untouched. No region is silently omitted: a region must have a
+reading or be explicitly marked keep as ink.
+
+The grouping is geometric, not a trained page-layout model. Dense equations,
+columns, arrows, and diagrams can be grouped imperfectly; the region type and
+output must be reviewed. The command limits the note to 1,200 pen strokes,
+120,000 ink points, 100 regions, and 25,000 points per region. Larger passages
+can still be handled with lasso commands. On iPad, the configured laptop
+service must be reachable over the network.
+
+## Further work
+
+1. Add region split/merge and reorder controls for columns, dense math, and
+   unusual layouts. The current reading order is top-to-bottom.
+2. Recognize clear arrows and connectors, but keep ambiguous relationships as
+   ink until the user labels them. Do not infer logical meaning from a shape.
+3. Compare model output on representative handwritten notes before suggesting
+   text versus math automatically. Keep per-region manual override.
 
 ## Model decision and acceptance
 
-Before enabling automatic whole-note parsing, compare the specialized
+Before adding automatic region-type suggestions, compare the specialized
 TrOCR + UniMERNet pipeline with a unified document model such as
 [PaddleOCR-VL](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6)
 on representative notes from the user's actual handwriting. Published document

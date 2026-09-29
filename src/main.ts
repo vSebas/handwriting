@@ -1,6 +1,8 @@
 import { requestUrl, App, Command, MarkdownRenderChild, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, type SettingGroup, TAbstractFile, TFile, View, WorkspaceLeaf, normalizePath } from "obsidian";
 import { MathRecognitionModal } from "./math/MathRecognitionModal";
 import { TextRecognitionModal } from "./math/TextRecognitionModal";
+import { WholeNoteRecognitionModal } from "./math/WholeNoteRecognitionModal";
+import { captureWholeNoteTarget, noteInkRegions } from "./math/WholeNoteInk";
 import { mathInk, type MathInk } from "./math/MathRecognition";
 import { captureMathTarget } from "./math/MathInsertionTarget";
 import { captureTextTarget } from "./math/TextInsertionTarget";
@@ -1178,6 +1180,7 @@ export function bindRecoveryNotices(
 export default class HandwritingPlugin extends Plugin {
 	private mathModal: MathRecognitionModal | null = null;
 	private textModal: TextRecognitionModal | null = null;
+	private wholeNoteModal: WholeNoteRecognitionModal | null = null;
 	private mathModels: MathModels | null = null;
 	private mathService: LocalUniMERService | null = null;
 	private getLocalUniMERService(): LocalUniMERService {
@@ -3120,6 +3123,34 @@ export default class HandwritingPlugin extends Plugin {
 				return true;
 			},
 		});
+		this.addCommand({
+			id: "recognize-note-handwriting",
+			name: "Transcribe all handwriting in this note",
+			checkCallback: checking => {
+				const active = this.app.workspace.activeEditor;
+				const file = active?.file;
+				if (!active?.editor || !file || file.extension.toLowerCase() !== "md") return false;
+				if (!checking) runDetached((async () => {
+					try {
+						await inlineInk.ensureLoaded(file.path);
+						if (!inlineInk.isLoaded(file.path)) throw new Error("The note's saved ink is still loading or damaged. Try again after it is available.");
+						if (this.app.workspace.activeEditor !== active || active.file !== file) throw new Error("Return to the original note and try again.");
+						const regions = noteInkRegions(inlineInk.strokes(file.path));
+						const append = captureWholeNoteTarget(active, () => this.app.workspace.activeEditor);
+						this.wholeNoteModal?.close();
+						this.wholeNoteModal = new WholeNoteRecognitionModal(this.app, regions,
+							async (region, kind, signal, progress) => kind === "text"
+								? this.recognizeSelectedText(region.ink, signal, progress)
+								: (await this.mathRecognizer().recognize(region.ink, signal, progress)).latex,
+							append);
+						this.wholeNoteModal.open();
+					} catch (error) {
+						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read note ink."}`);
+					}
+				})(), "transcribe note handwriting");
+				return true;
+			},
+		});
 		// Copy/paste ink, across notes too. The clipboard is the session's,
 		// never the system's: note-space coordinates mean nothing to other
 		// applications (the SVG export is for leaving the vault).
@@ -4745,7 +4776,9 @@ export default class HandwritingPlugin extends Plugin {
 		this.mathModal?.close();
 		this.mathModal = null;
 		this.textModal?.close();
+		this.wholeNoteModal?.close();
 		this.textModal = null;
+		this.wholeNoteModal = null;
 		this.mathService?.stop();
 		// First, so that anything still waiting on onLayoutReady finds it set.
 		this.unloaded = true;
@@ -6572,7 +6605,7 @@ export class HandwritingSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Handwritten text recognition",
-						desc: "Optional English text-line model on the same laptop service and URL/token, including from iPad. Run services\\unimernet\\setup-text.ps1 once on the laptop, restart desktop Obsidian, then lasso text and use Lasso: convert handwriting to text. Use the math command for equations.",
+						desc: "Optional English text-line model on the same laptop service and URL/token, including from iPad. Run services\\unimernet\\setup-text.ps1 once on the laptop and restart desktop Obsidian. Then use Lasso: convert handwriting to text, or Transcribe all handwriting in this note for region-by-region text and math review.",
 						render: setting => setting.addButton(button => button.setButtonText("Test text connection").onClick(async () => {
 							button.setDisabled(true);
 							try {
