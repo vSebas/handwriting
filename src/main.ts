@@ -1209,6 +1209,15 @@ export default class HandwritingPlugin extends Plugin {
 		return this.mathModels ??= new MathModels(this.app.vault.adapter,
 			this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`);
 	}
+	async removeHandToTexModelsForUniMERNet(): Promise<void> {
+		if (this.settings.mathProvider !== "unimernet") return;
+		try {
+			const removed = await this.getMathModels().remove();
+			if (removed > 0) new Notice(`Handwriting: removed ${removed} unused Hand-to-TeX model files from this device.`);
+		} catch (error) {
+			new Notice(`Handwriting: could not remove old Hand-to-TeX models: ${error instanceof Error ? error.message : "Unknown error."}`);
+		}
+	}
 	store!: PageStore;
 	settings: HandwritingSettings = { ...DEFAULT_SETTINGS };
 	/** Set at load: no settings file at all means a first-ever install. */
@@ -2070,6 +2079,7 @@ export default class HandwritingPlugin extends Plugin {
 		};
 		bindRecoveryNotices(this.store, (pageId) => this.noteNameFor(pageId));
 		await this.loadSettings();
+		void this.removeHandToTexModelsForUniMERNet();
 		if (Platform.isDesktopApp && typeof (window as Window & { require?: unknown }).require === "function") {
 			const service = this.getLocalUniMERService();
 			if (service.installed()) void this.startLocalUniMERService().catch(error =>
@@ -6521,7 +6531,7 @@ export class HandwritingSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Offline math recognition",
-						desc: "Only for Hand-to-TeX: download its model data from Hugging Face once (18.5 MB). UniMERNet does not use this download. Lasso an expression and run Lasso: convert handwriting to LaTeX.",
+						desc: "Only for Hand-to-TeX: download its model data from Hugging Face once (18.5 MB). UniMERNet does not use this download and removes saved Hand-to-TeX models on this device. Use Remove model to clear an iPad manually.",
 						render: (setting) => this.renderMathModelDownload(setting),
 					},
 				],
@@ -6634,6 +6644,7 @@ export class HandwritingSettingTab extends PluginSettingTab {
 		switch (key) {
 			case "mathProvider":
 				s.mathProvider = str === "unimernet" ? "unimernet" : "hand-to-tex";
+				if (s.mathProvider === "unimernet") void this.plugin.removeHandToTexModelsForUniMERNet();
 				break;
 			case "extendCanvasWhileScrolling":
 				s.extendCanvasWhileScrolling = on;
@@ -6848,6 +6859,19 @@ export class HandwritingSettingTab extends PluginSettingTab {
 				button.setButtonText("Download again");
 			} catch (error) {
 				setting.setDesc(error instanceof Error ? error.message : "Model download failed. Try again later.");
+			} finally {
+				button.setDisabled(false);
+			}
+		}));
+		setting.addButton(button => button.setButtonText("Remove model from this device").onClick(async () => {
+			button.setDisabled(true);
+			try {
+				const removed = await this.plugin.getMathModels().remove();
+				setting.setDesc(removed > 0
+					? `Removed ${removed} Hand-to-TeX model files from this device.`
+					: "No Hand-to-TeX model files were found on this device.");
+			} catch (error) {
+				setting.setDesc(error instanceof Error ? error.message : "Could not remove Hand-to-TeX model files.");
 			} finally {
 				button.setDisabled(false);
 			}

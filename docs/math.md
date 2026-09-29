@@ -15,6 +15,13 @@ opens, and saves the generated access token. On iPad, use the laptop's network
 address and sync or enter the token. Press **Test connection**. No offline
 Hand-to-TeX model download is needed when using UniMERNet.
 
+To remove Hand-to-TeX files already downloaded on an iPad, open **Handwriting
+settings → Handwriting to LaTeX → Offline math recognition** and press
+**Remove model from this device**. In beta.5, selecting UniMERNet also removes
+those files on that device, including at plugin startup when UniMERNet is
+already selected. Downloading a new Hand-to-TeX model removes older model
+revisions only after the new download succeeds.
+
 Lasso an equation, run the conversion command, and press **Recognize with
 UniMERNet**. Only the selected pen paths are rendered black on white and sent to
 your configured service. Your laptop runs the base model and returns one LaTeX

@@ -25,7 +25,7 @@
  * builds, and the assertions re-derive every normalised value by calling the
  * same normaliser main.ts calls rather than restating a number.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import HandwritingPlugin, { HandwritingSettingTab } from "./main";
 import { exportInkColor, inkExportReadabilityEnabled } from "./ink/InkTheme";
@@ -85,6 +85,7 @@ function fakePlugin(raw: unknown): Harness {
 	// Own properties, so they shadow the prototype's DOM-reaching versions.
 	plugin.applyPaperTo = (): void => {};
 	plugin.applyBooxMode = (): void => {};
+	plugin.removeHandToTexModelsForUniMERNet = vi.fn(async () => {});
 	return plugin as unknown as Harness;
 }
 
@@ -112,6 +113,7 @@ describe("settings control consistency preserves saved behavior", () => {
 		const tab = Object.create(HandwritingSettingTab.prototype);
 		tab.plugin = plugin;
 		tab.setControlValue("mathProvider", "unimernet");
+		expect((plugin as unknown as { removeHandToTexModelsForUniMERNet: ReturnType<typeof vi.fn> }).removeHandToTexModelsForUniMERNet).toHaveBeenCalledOnce();
 		await proto.persistSettings.call(plugin);
 		const reloaded = await loadThenSave(plugin.saved);
 		expect(reloaded.settings.mathProvider).toBe("unimernet");

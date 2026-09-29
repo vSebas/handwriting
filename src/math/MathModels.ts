@@ -15,8 +15,33 @@ export function verifyMathModel(data: ArrayBuffer, model: typeof MATH_MODELS[num
 
 export class MathModels {
 	private downloading: Promise<void> | null = null;
-	constructor(private adapter: Pick<DataAdapter, "readBinary" | "writeBinary" | "exists" | "mkdir">, private pluginDir: string) {}
+	constructor(private adapter: Pick<DataAdapter, "readBinary" | "writeBinary" | "exists" | "mkdir" | "list" | "remove">, private pluginDir: string) {}
+	private folder(): string { return normalizePath(`${this.pluginDir}/math-models`); }
 	private path(name: string): string { return normalizePath(`${this.pluginDir}/math-models/${MODEL_REVISION}-${name}`); }
+
+	/** Remove only Hand-to-TeX ONNX files owned by this plugin, including older revisions. */
+	private async removeModels(keepRevision?: string): Promise<number> {
+		const folder = this.folder();
+		if (!await this.adapter.exists(folder)) return 0;
+		const { files } = await this.adapter.list(folder);
+		let removed = 0;
+		for (const file of files) {
+			if (!file.startsWith(`${folder}/`)) continue;
+			const name = file.slice(folder.length + 1);
+			if (!/^[0-9a-f]{40}-(encoder|decoder_step)\.onnx$/.test(name)) continue;
+			if (keepRevision && name.startsWith(`${keepRevision}-`)) continue;
+			await this.adapter.remove(file);
+			removed++;
+		}
+		return removed;
+	}
+
+	async remove(): Promise<number> {
+		if (this.downloading) {
+			try { await this.downloading; } catch { /* A failed download may still leave an earlier model to remove. */ }
+		}
+		return this.removeModels();
+	}
 
 	async read(): Promise<{ encoder: ArrayBuffer; decoder: ArrayBuffer }> {
 		const data: ArrayBuffer[] = [];
@@ -37,7 +62,7 @@ export class MathModels {
 	}
 
 	private async downloadFiles(progress: (message: string) => void): Promise<void> {
-		const folder = normalizePath(`${this.pluginDir}/math-models`);
+		const folder = this.folder();
 		if (!await this.adapter.exists(folder)) await this.adapter.mkdir(folder);
 		for (const model of MATH_MODELS) {
 			progress(`Downloading ${model.name}…`);
@@ -48,6 +73,11 @@ export class MathModels {
 			if (response.status !== 200) throw new Error(`Model download failed (HTTP ${response.status}). Try again later.`);
 			verifyMathModel(response.arrayBuffer, model);
 			await this.adapter.writeBinary(this.path(model.name), response.arrayBuffer);
+		}
+		try { await this.removeModels(MODEL_REVISION); }
+		catch {
+			progress("Offline recognition is ready, but older model files could not be removed. Use Remove model later if needed.");
+			return;
 		}
 		progress("Offline recognition is ready.");
 	}
