@@ -1,13 +1,33 @@
 # Handwriting to LaTeX in this fork
 
 This fork adds recognition to Handwriting's existing note and PDF annotation
-surfaces. It uses [Hand-to-TeX](https://github.com/Projekt-Deep-Learning-2026/hand-to-tex)
-directly on the selected pen strokes. No API key, subscription, or Python service
-is needed. Printed PDF content and images are not recognized.
+surfaces. Select either [Hand-to-TeX](https://github.com/Projekt-Deep-Learning-2026/hand-to-tex)
+on your device or **UniMERNet** on your laptop. Both preserve the same lasso,
+preview/edit, and insert workflow. Printed PDF content and embedded images are
+not recognized by the plugin command.
 
-## Setup and use
+## UniMERNet setup
 
-For BRAT, add `vSebas/handwriting` and select release `1.4.22-beta.2`. BRAT installs
+Follow the [local service instructions](../services/unimernet/README.md), then
+choose **UniMERNet (local service)** under **Handwriting to LaTeX** in settings.
+Desktop Handwriting starts the installed service automatically when Obsidian
+opens, and saves the generated access token. On iPad, use the laptop's network
+address and sync or enter the token. Press **Test connection**. No offline
+Hand-to-TeX model download is needed when using UniMERNet.
+
+Lasso an equation, run the conversion command, and press **Recognize with
+UniMERNet**. Only the selected pen paths are rendered black on white and sent to
+your configured service. Your laptop runs the base model and returns one LaTeX
+result to the existing preview. Desktop Obsidian must remain open, and the laptop
+must remain awake and reachable. Closing the
+dialog ignores late results; work already running on the laptop may finish.
+Recognition images and LaTeX are not saved by the service.
+
+## Hand-to-TeX setup and use
+
+For BRAT, add `vSebas/handwriting` and select the published release. UniMERNet
+was added in `1.4.22-beta.3`; automatic laptop startup is `1.4.22-beta.4`.
+BRAT installs
 the three compiled files from the release; no source build is needed on the iPad.
 After enabling Handwriting, continue with the model download in step 2 below.
 This fork uses the same plugin ID as upstream and replaces its installed build.
@@ -58,7 +78,7 @@ is intended for a normal paragraph or existing display equation.
 Native Obsidian MathJax renders the preview. Full LaTeX documents, package loading,
 and arbitrary LaTeX engines are outside the scope of this feature.
 
-## iPad workflow and limits
+## On-device Hand-to-TeX workflow and limits
 
 The intended workflow is to write, lasso, recognize, review, and insert on the
 iPad itself. The runtime uses single-threaded WebAssembly in a dedicated worker;

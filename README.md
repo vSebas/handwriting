@@ -4,13 +4,15 @@ Handwrite, highlight, erase and lasso directly on your notes and PDFs. Your note
 
 Open a note and write. The note stays a `.md` file.
 
-**This fork adds offline handwriting-to-LaTeX using Hand-to-TeX.** Lasso an
-equation, recognize it on your device, review the result, and insert ordinary
-Obsidian math. Download the model once in Handwriting settings. No API key or
-local server is required. See [setup, iPad workflow, and compatibility](docs/math.md).
+**This fork adds handwriting-to-LaTeX.** Lasso an equation, recognize it, review
+the result, and insert ordinary Obsidian math. Choose Hand-to-TeX on your device
+or UniMERNet running on your laptop. See [setup, iPad workflow, and compatibility](docs/math.md)
+and [UniMERNet service setup](services/unimernet/README.md).
 The community installation instructions below refer to the upstream plugin;
 install this fork's build to use recognition. For BRAT, add `vSebas/handwriting`
-and select release `1.4.22-beta.2`, which offers up to three candidate readings.
+and select the corresponding published release. Version `1.4.22-beta.3` adds
+the optional UniMERNet provider. Version `1.4.22-beta.4` adds automatic service
+startup on the laptop once published.
 
 ## removing the plugin
 

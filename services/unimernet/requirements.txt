@@ -1,0 +1,13 @@
+# CPU wheels for torch/torchvision can be installed from the PyTorch CPU index.
+unimernet==0.2.3
+torch==2.6.0
+torchvision==0.21.0
+transformers==4.42.4
+numpy==1.26.4
+albumentations==1.4.4
+opencv-python==4.10.0.84
+opencv-python-headless==4.10.0.84
+huggingface-hub==0.25.2
+# UniMERNet imports datasets 2.14, which still uses PyArrow's old extension API.
+datasets==2.14.4
+pyarrow==17.0.0

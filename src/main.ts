@@ -3,6 +3,9 @@ import { MathRecognitionModal } from "./math/MathRecognitionModal";
 import { mathInk } from "./math/MathRecognition";
 import { captureMathTarget } from "./math/MathInsertionTarget";
 import { handToTex } from "./math/HandToTex";
+import { uniMERNet, checkUniMERNet, DEFAULT_UNIMER_URL } from "./math/UniMERNet";
+import { LocalUniMERService } from "./math/UniMERDesktop";
+import type { MathRecognizer } from "./math/MathRecognizer";
 import { MathModels } from "./math/MathModels";
 import {
 	clearGatedCommandAction,
@@ -355,6 +358,10 @@ const PDF_INK_CHANGED_DURING_BACKUP =
 	"Handwriting: the ink changed while its backup was being made. nothing was deleted. run Delete all ink again if you still want to remove it.";
 
 interface HandwritingSettings {
+	mathProvider: "hand-to-tex" | "unimernet";
+	uniMERUrl: string;
+	uniMERToken: string;
+	uniMERServiceRoot: string;
 	/** Named locations use their own schema; opaque records survive older builds. */
 	savedViews: unknown[];
 	/**
@@ -500,6 +507,10 @@ interface HandwritingSettings {
 }
 
 const DEFAULT_SETTINGS: HandwritingSettings = {
+	mathProvider: "hand-to-tex",
+	uniMERUrl: DEFAULT_UNIMER_URL,
+	uniMERToken: "",
+	uniMERServiceRoot: "",
 	cameras: {},
 	savedViews: [],
 	inkSizes: { pen: 1, highlighter: 1 },
@@ -1165,6 +1176,35 @@ export function bindRecoveryNotices(
 export default class HandwritingPlugin extends Plugin {
 	private mathModal: MathRecognitionModal | null = null;
 	private mathModels: MathModels | null = null;
+	private mathService: LocalUniMERService | null = null;
+	private getLocalUniMERService(): LocalUniMERService {
+		return this.mathService ??= new LocalUniMERService(() => ({
+			root: this.settings.uniMERServiceRoot, url: this.settings.uniMERUrl, token: this.settings.uniMERToken,
+		}));
+	}
+	async startLocalUniMERService(): Promise<void> {
+		if (!Platform.isDesktopApp) return;
+		const token = await this.getLocalUniMERService().start();
+		if (this.unloaded) return;
+		if (this.settings.uniMERToken !== token) {
+			this.settings.uniMERToken = token;
+			await this.persistSettings();
+		}
+	}
+	private mathRecognizer(): MathRecognizer {
+		if (this.settings.mathProvider !== "unimernet") return handToTex(this.getMathModels());
+		const provider = uniMERNet({ url: this.settings.uniMERUrl, token: this.settings.uniMERToken });
+		return { name: provider.name, description: provider.description,
+			recognize: async (ink, signal, progress) => {
+				if (Platform.isDesktopApp) {
+					progress("Starting UniMERNet on this laptop...");
+					await this.startLocalUniMERService();
+				}
+				if (signal.aborted) throw new Error("Recognition cancelled.");
+				return uniMERNet({ url: this.settings.uniMERUrl, token: this.settings.uniMERToken }).recognize(ink, signal, progress);
+			},
+		};
+	}
 	getMathModels(): MathModels {
 		return this.mathModels ??= new MathModels(this.app.vault.adapter,
 			this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`);
@@ -2030,6 +2070,11 @@ export default class HandwritingPlugin extends Plugin {
 		};
 		bindRecoveryNotices(this.store, (pageId) => this.noteNameFor(pageId));
 		await this.loadSettings();
+		if (Platform.isDesktopApp && typeof (window as Window & { require?: unknown }).require === "function") {
+			const service = this.getLocalUniMERService();
+			if (service.installed()) void this.startLocalUniMERService().catch(error =>
+				new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not start UniMERNet."}`));
+		}
 
 		this.registerView(HANDWRITING_PEN_LAB_VIEW_TYPE, (leaf) => new PenLabView(leaf));
 		this.registerView(
@@ -3017,7 +3062,7 @@ export default class HandwritingPlugin extends Plugin {
 							? captureMathTarget(active, () => this.app.workspace.activeEditor)
 							: undefined;
 						this.mathModal?.close();
-						this.mathModal = new MathRecognitionModal(this.app, ink, handToTex(this.getMathModels()), insert);
+						this.mathModal = new MathRecognitionModal(this.app, ink, this.mathRecognizer(), insert);
 						this.mathModal.open();
 					} catch (error) {
 						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read the selected ink."}`);
@@ -4650,6 +4695,7 @@ export default class HandwritingPlugin extends Plugin {
 	onunload(): void {
 		this.mathModal?.close();
 		this.mathModal = null;
+		this.mathService?.stop();
 		// First, so that anything still waiting on onLayoutReady finds it set.
 		this.unloaded = true;
 		this.notePaper?.destroy();
@@ -5265,6 +5311,10 @@ export default class HandwritingPlugin extends Plugin {
 		const carried = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
 		this.settings = {
 			...carried,
+			mathProvider: raw?.mathProvider === "unimernet" ? "unimernet" : "hand-to-tex",
+			uniMERUrl: typeof raw?.uniMERUrl === "string" ? raw.uniMERUrl : DEFAULT_UNIMER_URL,
+			uniMERToken: typeof raw?.uniMERToken === "string" ? raw.uniMERToken : "",
+			uniMERServiceRoot: typeof raw?.uniMERServiceRoot === "string" ? raw.uniMERServiceRoot : "",
 			// The retired canvas page's named views: carried through untouched, so an older build still finds them.
 			savedViews: Array.isArray(raw?.savedViews) ? raw.savedViews : [],
 			cameras: raw?.cameras && typeof raw.cameras === "object" ? raw.cameras : {},
@@ -6422,6 +6472,49 @@ export class HandwritingSettingTab extends PluginSettingTab {
 				heading: "Handwriting to LaTeX",
 				items: [
 					{
+						name: "Recognition provider",
+						desc: "Use the on-device model or send selected handwriting to UniMERNet on your laptop.",
+						control: { type: "dropdown", key: "mathProvider", options: { "hand-to-tex": "Hand-to-TeX (on device)", unimernet: "UniMERNet (local service)" } },
+					},
+					{
+						name: "UniMERNet service URL",
+						desc: "On iPad, use the laptop's network address, for example http://192.168.1.20:8765. The laptop must be running the service.",
+						render: setting => setting.addText(text => text.setPlaceholder(DEFAULT_UNIMER_URL).setValue(this.plugin.settings.uniMERUrl).onChange(value => {
+							this.plugin.settings.uniMERUrl = value.trim(); this.plugin.saveSettingsNow();
+						})),
+					},
+					{
+						name: "UniMERNet access token",
+						desc: "Desktop Handwriting fills this from the local service. Syncing plugin settings also copies it to your iPad.",
+						render: setting => setting.addText(text => {
+							text.inputEl.type = "password";
+							text.inputEl.autocomplete = "off";
+							text.setValue(this.plugin.settings.uniMERToken).onChange(value => {
+								this.plugin.settings.uniMERToken = value.trim(); this.plugin.saveSettingsNow();
+							});
+						}),
+					},
+					{
+						name: "UniMERNet service folder on laptop",
+						desc: "Folder containing services/unimernet and .tools. Empty uses Documents/handwriting on this laptop. Desktop only.",
+						render: setting => setting.addText(text => text.setPlaceholder("Documents\\handwriting").setValue(this.plugin.settings.uniMERServiceRoot).onChange(value => {
+							this.plugin.settings.uniMERServiceRoot = value.trim(); this.plugin.saveSettingsNow();
+						})),
+					},
+					{
+						name: "UniMERNet connection",
+						desc: "Check the service and token without sending handwriting.",
+						render: setting => setting.addButton(button => button.setButtonText("Test connection").onClick(async () => {
+							button.setDisabled(true);
+							try {
+								if (Platform.isDesktopApp) await this.plugin.startLocalUniMERService();
+								await checkUniMERNet({ url: this.plugin.settings.uniMERUrl, token: this.plugin.settings.uniMERToken });
+								setting.setDesc("UniMERNet is ready.");
+							} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Connection failed."); }
+							finally { button.setDisabled(false); }
+						})),
+					},
+					{
 						name: "Offline math recognition",
 						desc: "Download Hand-to-TeX model data from Hugging Face once (18.5 MB). Recognition then runs on this device without uploading handwriting. Lasso an expression and run Lasso: convert handwriting to LaTeX.",
 						render: (setting) => this.renderMathModelDownload(setting),
@@ -6534,6 +6627,9 @@ export class HandwritingSettingTab extends PluginSettingTab {
 		const on = value === true;
 		const str = typeof value === "string" ? value : "";
 		switch (key) {
+			case "mathProvider":
+				s.mathProvider = str === "unimernet" ? "unimernet" : "hand-to-tex";
+				break;
 			case "extendCanvasWhileScrolling":
 				s.extendCanvasWhileScrolling = on;
 				setScrollExpansionEnabled(on);

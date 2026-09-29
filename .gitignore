@@ -3,3 +3,4 @@ main.js
 release/
 SECRET_KEY.local.txt
 .tools/
+__pycache__/

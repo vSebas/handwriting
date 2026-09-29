@@ -203,7 +203,8 @@ describe("the settings row prints the shared table", () => {
 	// ways a bounded-slice guard goes vacuous are a missing opener, a missing
 	// closer, and a window that closes before it opens.
 	const OPEN = 'name: "Extra commands for hotkeys"';
-	const CLOSE = 'heading: "Developer"';
+	// Stop at the next group; unrelated provider settings are not part of this row.
+	const CLOSE = 'heading: "Handwriting to LaTeX"';
 
 	function row(): string {
 		const from = MAIN.indexOf(OPEN);
