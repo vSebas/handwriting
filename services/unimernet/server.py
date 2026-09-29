@@ -81,7 +81,7 @@ def load_recognizer(model_dir, device="cpu"):
     return recognize
 
 
-def make_server(host, port, token, recognize):
+def make_server(host, port, token, recognize, recognize_text=None):
     busy = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -117,13 +117,16 @@ def make_server(host, port, token, recognize):
             if self.path != "/health":
                 self.reply(404, {"error": "Unknown endpoint."})
                 return
-            self.reply(200, {"provider": "unimernet", "ready": True})
+            self.reply(200, {"provider": "unimernet", "ready": True, "text_ready": recognize_text is not None})
 
         def do_POST(self):
             if not self.authorized():
                 return
-            if self.path != "/recognize":
+            if self.path not in ("/recognize", "/recognize-text"):
                 self.reply(404, {"error": "Unknown endpoint."})
+                return
+            if self.path == "/recognize-text" and recognize_text is None:
+                self.reply(503, {"error": "Install the optional handwritten-text model first."})
                 return
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -141,8 +144,10 @@ def make_server(host, port, token, recognize):
                 except (ValueError, TypeError):
                     self.reply(400, {"error": "Invalid image request."})
                     return
-                latex = recognize(image)
-                self.reply(200, {"latex": latex})
+                if self.path == "/recognize-text":
+                    self.reply(200, {"text": recognize_text(image)})
+                else:
+                    self.reply(200, {"latex": recognize(image)})
             except Exception as error:
                 # Only the exception type is logged; payloads stay in memory.
                 print(f"Recognition failed: {type(error).__name__}", flush=True)
@@ -158,6 +163,7 @@ def make_server(host, port, token, recognize):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", required=True)
+    parser.add_argument("--text-model-dir", help="Optional local TrOCR model folder")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--token-file", required=True)
@@ -167,6 +173,10 @@ def main():
     args = parser.parse_args()
     print("Loading UniMERNet base...", flush=True)
     recognize = load_recognizer(args.model_dir, args.device)
+    recognize_text = None
+    if args.text_model_dir and (Path(args.text_model_dir) / "model.safetensors").is_file():
+        from text_ocr import load_text_recognizer
+        recognize_text = load_text_recognizer(args.text_model_dir)
     if args.image:
         from PIL import Image, ImageOps
         import time
@@ -183,7 +193,7 @@ def main():
     token = token_path.read_text(encoding="utf-8").strip()
     if len(token) < 24:
         raise ValueError("Token must contain at least 24 characters.")
-    server = make_server(args.host, args.port, token, recognize)
+    server = make_server(args.host, args.port, token, recognize, recognize_text)
     print(f"Ready on {args.host}:{args.port}. Access token file: {token_path.resolve()}", flush=True)
     print("Keep this window open. Ctrl+C stops the service.", flush=True)
     try:

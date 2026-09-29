@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkUniMERNet, uniMEREndpoint, uniMERNet } from "./UniMERNet";
+import { checkUniMERNet, checkHandwrittenText, recognizeHandwrittenText, uniMEREndpoint, uniMERNet } from "./UniMERNet";
 
 const network = vi.hoisted(() => vi.fn());
 const render = vi.hoisted(() => vi.fn(() => "data:image/png;base64,test"));
@@ -35,6 +35,16 @@ describe("UniMERNet service provider", () => {
 		expect(render).not.toHaveBeenCalled();
 		network.mockResolvedValue({ status: 200, json: {} });
 		await expect(checkUniMERNet(settings)).rejects.toThrow("not ready");
+	});
+	it("uses the same authenticated service for handwritten text without treating it as LaTeX", async () => {
+		network.mockResolvedValue({ status: 200, json: { provider: "unimernet", ready: true, text_ready: true } });
+		await checkHandwrittenText(settings);
+		network.mockResolvedValue({ status: 200, json: { text: "hello\r\nworld" } });
+		expect(await recognizeHandwrittenText(settings, ink, new AbortController().signal, () => {})).toBe("hello\nworld");
+		expect(network.mock.calls[1]![0]).toMatchObject({ url: settings.url + "/recognize-text", method: "POST",
+			headers: { Authorization: "Bearer local-test-token" } });
+		network.mockResolvedValue({ status: 503, json: {} });
+		await expect(recognizeHandwrittenText(settings, ink, new AbortController().signal, () => {})).rejects.toThrow("optional handwritten-text model");
 	});
 	it.each([[401, "access token"], [429, "another expression"], [500, "HTTP 500"]])("handles HTTP %s without retrying", async (status, message) => {
 		network.mockResolvedValue({ status, json: {} });

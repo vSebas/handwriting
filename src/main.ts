@@ -1,9 +1,11 @@
 import { requestUrl, App, Command, MarkdownRenderChild, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, type SettingGroup, TAbstractFile, TFile, View, WorkspaceLeaf, normalizePath } from "obsidian";
 import { MathRecognitionModal } from "./math/MathRecognitionModal";
-import { mathInk } from "./math/MathRecognition";
+import { TextRecognitionModal } from "./math/TextRecognitionModal";
+import { mathInk, type MathInk } from "./math/MathRecognition";
 import { captureMathTarget } from "./math/MathInsertionTarget";
+import { captureTextTarget } from "./math/TextInsertionTarget";
 import { handToTex } from "./math/HandToTex";
-import { uniMERNet, checkUniMERNet, DEFAULT_UNIMER_URL } from "./math/UniMERNet";
+import { uniMERNet, checkUniMERNet, checkHandwrittenText, recognizeHandwrittenText, DEFAULT_UNIMER_URL } from "./math/UniMERNet";
 import { LocalUniMERService } from "./math/UniMERDesktop";
 import type { MathRecognizer } from "./math/MathRecognizer";
 import { MathModels } from "./math/MathModels";
@@ -1175,6 +1177,7 @@ export function bindRecoveryNotices(
 
 export default class HandwritingPlugin extends Plugin {
 	private mathModal: MathRecognitionModal | null = null;
+	private textModal: TextRecognitionModal | null = null;
 	private mathModels: MathModels | null = null;
 	private mathService: LocalUniMERService | null = null;
 	private getLocalUniMERService(): LocalUniMERService {
@@ -1204,6 +1207,14 @@ export default class HandwritingPlugin extends Plugin {
 				return uniMERNet({ url: this.settings.uniMERUrl, token: this.settings.uniMERToken }).recognize(ink, signal, progress);
 			},
 		};
+	}
+	private async recognizeSelectedText(ink: MathInk, signal: AbortSignal, progress: (message: string) => void): Promise<string> {
+		if (Platform.isDesktopApp) {
+			progress("Starting the recognition service on this laptop...");
+			await this.startLocalUniMERService();
+		}
+		if (signal.aborted) throw new Error("Recognition cancelled.");
+		return recognizeHandwrittenText({ url: this.settings.uniMERUrl, token: this.settings.uniMERToken }, ink, signal, progress);
 	}
 	getMathModels(): MathModels {
 		return this.mathModels ??= new MathModels(this.app.vault.adapter,
@@ -3071,9 +3082,37 @@ export default class HandwritingPlugin extends Plugin {
 						const insert = surface.kind === "inline" && active
 							? captureMathTarget(active, () => this.app.workspace.activeEditor)
 							: undefined;
+						this.textModal?.close();
 						this.mathModal?.close();
 						this.mathModal = new MathRecognitionModal(this.app, ink, this.mathRecognizer(), insert);
 						this.mathModal.open();
+					} catch (error) {
+						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read the selected ink."}`);
+					}
+				}
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "recognize-selected-text",
+			name: "Lasso: convert handwriting to text",
+			checkCallback: checking => {
+				const surface = this.activeInkSurface();
+				if (!surface) return false;
+				if (!checking) {
+					try {
+						const ink = mathInk(surface.kind === "inline"
+							? surface.overlay.selectedStrokesForMath()
+							: surface.controller.selectedStrokesForMath());
+						const active = this.app.workspace.activeEditor;
+						const insert = surface.kind === "inline" && active
+							? captureTextTarget(active, () => this.app.workspace.activeEditor)
+							: undefined;
+						this.mathModal?.close();
+						this.textModal?.close();
+						this.textModal = new TextRecognitionModal(this.app, ink,
+							(selected, signal, progress) => this.recognizeSelectedText(selected, signal, progress), insert);
+						this.textModal.open();
 					} catch (error) {
 						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read the selected ink."}`);
 					}
@@ -4705,6 +4744,8 @@ export default class HandwritingPlugin extends Plugin {
 	onunload(): void {
 		this.mathModal?.close();
 		this.mathModal = null;
+		this.textModal?.close();
+		this.textModal = null;
 		this.mathService?.stop();
 		// First, so that anything still waiting on onLayoutReady finds it set.
 		this.unloaded = true;
@@ -6526,6 +6567,19 @@ export class HandwritingSettingTab extends PluginSettingTab {
 								await checkUniMERNet({ url: this.plugin.settings.uniMERUrl, token: this.plugin.settings.uniMERToken });
 								setting.setDesc("UniMERNet is ready.");
 							} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Connection failed."); }
+							finally { button.setDisabled(false); }
+						})),
+					},
+					{
+						name: "Handwritten text recognition",
+						desc: "Optional English text-line model on the same laptop service and URL/token, including from iPad. Run services\\unimernet\\setup-text.ps1 once on the laptop, restart desktop Obsidian, then lasso text and use Lasso: convert handwriting to text. Use the math command for equations.",
+						render: setting => setting.addButton(button => button.setButtonText("Test text connection").onClick(async () => {
+							button.setDisabled(true);
+							try {
+								if (Platform.isDesktopApp) await this.plugin.startLocalUniMERService();
+								await checkHandwrittenText({ url: this.plugin.settings.uniMERUrl, token: this.plugin.settings.uniMERToken });
+								setting.setDesc("Handwritten-text recognition is ready on the laptop.");
+							} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Text connection failed."); }
 							finally { button.setDisabled(false); }
 						})),
 					},

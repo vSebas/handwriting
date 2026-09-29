@@ -21,7 +21,10 @@ class ServiceTests(unittest.TestCase):
         def recognize(image):
             self.calls.append(image)
             return r"\frac{1}{2}"
-        self.server = make_server("127.0.0.1", 0, "test-token", recognize)
+        def recognize_text(image):
+            self.calls.append(image)
+            return "handwritten text"
+        self.server = make_server("127.0.0.1", 0, "test-token", recognize, recognize_text)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -40,10 +43,11 @@ class ServiceTests(unittest.TestCase):
             return error.code, json.load(error)
 
     def test_health_and_recognition(self):
-        self.assertEqual(self.request("/health"), (200, {"provider": "unimernet", "ready": True}))
+        self.assertEqual(self.request("/health"), (200, {"provider": "unimernet", "ready": True, "text_ready": True}))
         self.assertEqual(self.calls, [])
         self.assertEqual(self.request("/recognize", image_body()), (200, {"latex": r"\frac{1}{2}"}))
         self.assertEqual(self.calls[0].getpixel((0, 0)), (255, 255, 255))
+        self.assertEqual(self.request("/recognize-text", image_body()), (200, {"text": "handwritten text"}))
 
     def test_authorization_before_processing(self):
         self.assertEqual(self.request("/recognize", image_body(), "wrong")[0], 401)
@@ -67,6 +71,21 @@ class ServiceTests(unittest.TestCase):
         Image.new("L", (3000, 3000), 255).save(buffer, format="PNG")
         with self.assertRaises(ValueError):
             decode_image(json.dumps({"image": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()}))
+
+    def test_text_endpoint_requires_an_installed_model(self):
+        other = make_server("127.0.0.1", 0, "test-token", lambda image: "x")
+        thread = threading.Thread(target=other.serve_forever, daemon=True)
+        thread.start()
+        old_url = self.url
+        self.url = f"http://127.0.0.1:{other.server_port}"
+        try:
+            self.assertEqual(self.request("/health")[1]["text_ready"], False)
+            self.assertEqual(self.request("/recognize-text", image_body())[0], 503)
+        finally:
+            self.url = old_url
+            other.shutdown()
+            other.server_close()
+            thread.join()
 
     def test_busy_service_rejects_duplicates_and_recovers(self):
         entered, release = threading.Event(), threading.Event()

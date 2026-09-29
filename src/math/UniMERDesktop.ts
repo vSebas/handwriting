@@ -87,7 +87,7 @@ export class LocalUniMERService {
 		const script = path.join(root, "services", "unimernet", "server.py");
 		const model = path.join(root, ".tools", "unimernet-base");
 		const child = childProcess.spawn(python, [script, "--host", "0.0.0.0", "--port", port,
-			"--model-dir", model, "--token-file", tokenPath], {
+			"--model-dir", model, "--text-model-dir", path.join(root, ".tools", "trocr-base-handwritten"), "--token-file", tokenPath], {
 			cwd: root, windowsHide: true, stdio: "ignore",
 			env: { ...process.env, HF_HOME: path.join(root, ".tools", "hf-cache"), HF_HUB_DISABLE_TELEMETRY: "1" },
 		});

@@ -61,6 +61,28 @@ on the laptop continues. The service rejects concurrent work instead of building
 a queue. It does not save request images or recognized LaTeX. After setup, model
 loading and recognition run offline.
 
+## Optional handwritten text
+
+After the Windows setup above, install the separate English text-line model:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File services\unimernet\setup-text.ps1
+```
+
+This downloads a pinned [TrOCR handwritten-text model](https://huggingface.co/microsoft/trocr-base-handwritten)
+to `.tools/trocr-base-handwritten`. It uses the existing Python environment and
+authenticated service, but loads the text model only for a text request. Restart
+desktop Obsidian after installing it. In Handwriting settings, press **Test text
+connection** on the laptop and iPad. Lasso a short text line or paragraph and
+run **Lasso: convert handwriting to text**. Review the editable result before
+inserting or copying it. Equations still use the LaTeX command. Text recognition
+does not interpret arrows or diagrams; the original ink is kept.
+
+The model card describes single text-line images as its intended input. The
+service divides clearly separated horizontal lines before recognition, but
+crowded layouts may need separate lasso selections. See the
+[whole-note plan](../../docs/handwriting-ocr-plan.md) for mixed content.
+
 ## Developer checks
 
 ```powershell

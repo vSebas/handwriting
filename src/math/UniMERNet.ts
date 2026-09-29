@@ -1,5 +1,6 @@
 import { requestUrl } from "obsidian";
 import type { MathRecognizer } from "./MathRecognizer";
+import type { MathInk } from "./MathRecognition";
 import { mathInkImage } from "./MathInkImage";
 import { normalizeLatex } from "./Latex";
 import { timerHost } from "../util/RuntimeScheduler";
@@ -7,7 +8,7 @@ import { timerHost } from "../util/RuntimeScheduler";
 export const DEFAULT_UNIMER_URL = "http://127.0.0.1:8765";
 export interface UniMERSettings { url: string; token: string }
 
-export function uniMEREndpoint(base: string, path: "recognize" | "health"): string {
+export function uniMEREndpoint(base: string, path: "recognize" | "recognize-text" | "health"): string {
 	let url: URL;
 	try { url = new URL(base.trim()); } catch { throw new Error("Enter the UniMERNet service URL in Handwriting settings."); }
 	if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
@@ -18,7 +19,7 @@ export function uniMEREndpoint(base: string, path: "recognize" | "health"): stri
 }
 
 /** requestUrl works in both mobile and desktop Obsidian without browser CORS. */
-async function serviceRequest(settings: UniMERSettings, path: "recognize" | "health", signal: AbortSignal, body?: string): Promise<Record<string, unknown>> {
+async function serviceRequest(settings: UniMERSettings, path: "recognize" | "recognize-text" | "health", signal: AbortSignal, body?: string): Promise<Record<string, unknown>> {
 	if (signal.aborted) throw new Error("Recognition cancelled.");
 	const url = uniMEREndpoint(settings.url, path);
 	const token = settings.token.trim();
@@ -41,6 +42,7 @@ async function serviceRequest(settings: UniMERSettings, path: "recognize" | "hea
 		const response = await Promise.race([request, stopped]);
 		if (response.status === 401) throw new Error("UniMERNet rejected the access token. Copy the token from the laptop service settings.");
 		if (response.status === 429) throw new Error("UniMERNet is still processing another expression. Wait for it to finish, then try again.");
+		if ((response.status === 503 || response.status === 404) && path === "recognize-text") throw new Error("Update the laptop service, install its optional handwritten-text model, then restart desktop Obsidian.");
 		if (response.status !== 200) throw new Error(`UniMERNet service failed (HTTP ${response.status}). Check the laptop service window.`);
 		let value: unknown;
 		try { value = response.json; } catch { throw new Error("UniMERNet returned an invalid response."); }
@@ -55,6 +57,22 @@ async function serviceRequest(settings: UniMERSettings, path: "recognize" | "hea
 export async function checkUniMERNet(settings: UniMERSettings): Promise<void> {
 	const result = await serviceRequest(settings, "health", new AbortController().signal);
 	if (result.provider !== "unimernet" || result.ready !== true) throw new Error("UniMERNet is not ready. Wait for the laptop to load the model.");
+}
+
+export async function checkHandwrittenText(settings: UniMERSettings): Promise<void> {
+	const result = await serviceRequest(settings, "health", new AbortController().signal);
+	if (result.text_ready !== true) throw new Error("Update the laptop service, install its optional handwritten-text model, then restart desktop Obsidian.");
+}
+
+export async function recognizeHandwrittenText(settings: UniMERSettings, ink: MathInk, signal: AbortSignal,
+	progress: (message: string) => void): Promise<string> {
+	if (signal.aborted) throw new Error("Recognition cancelled.");
+	uniMEREndpoint(settings.url, "recognize-text");
+	if (!settings.token.trim()) throw new Error("Enter the UniMERNet access token in Handwriting settings.");
+	progress("Reading handwritten text on your laptop...");
+	const result = await serviceRequest(settings, "recognize-text", signal, JSON.stringify({ image: mathInkImage(ink) }));
+	if (typeof result.text !== "string" || !result.text.trim()) throw new Error("No text was recognized. Select one or more clear text lines.");
+	return result.text.replace(/\r\n?/g, "\n").trim();
 }
 
 export function uniMERNet(settings: UniMERSettings): MathRecognizer {

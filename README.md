@@ -13,7 +13,9 @@ install this fork's build to use recognition. For BRAT, add `vSebas/handwriting`
 and select the corresponding published release. Version `1.4.22-beta.3` adds
 the optional UniMERNet provider. Version `1.4.22-beta.4` adds automatic service
 startup on the laptop. Version `1.4.22-beta.5` adds setup guidance in Handwriting
-settings.
+settings. Version `1.4.22-beta.6` adds optional English handwritten-text
+recognition through the same laptop service. Mixed whole-note conversion is
+planned in [the handwriting OCR plan](docs/handwriting-ocr-plan.md).
 
 ## removing the plugin
 
