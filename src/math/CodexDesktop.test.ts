@@ -1,67 +1,79 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import http from "node:http";
+import crypto from "node:crypto";
+import process from "node:process";
+import { EventEmitter } from "node:events";
 import { LocalCodexService } from "./CodexDesktop";
 
 const network = vi.hoisted(() => vi.fn());
 vi.mock("obsidian", async original => ({ ...await original<object>(), requestUrl: network }));
 const originalWindow = globalThis.window;
-const files = new Map<string, string>();
-const fakeHome = path.resolve("test", "fake-home");
-const processChild = { exitCode: null as number | null, killed: false, on: vi.fn(), kill: vi.fn(function () { processChild.killed = true; return true; }) };
-const spawn = vi.fn((_command: string, _args: string[], _options: Record<string, unknown>) => processChild);
-const settings = { root: "", url: "http://192.168.1.20:8765", token: "" };
+let folder: string;
+let service: LocalCodexService | null;
+let commands: string[][];
+let port: number;
+let settings: { url: string; token: string };
 
 beforeEach(() => {
-	settings.root = "";
-	files.clear(); network.mockReset(); spawn.mockClear(); processChild.exitCode = null; processChild.killed = false; processChild.kill.mockClear();
-	(globalThis as any).window = { setTimeout, clearTimeout, require: (module: string) => ({
-		"node:fs": { existsSync: (name: string) => name.endsWith("codex-access-token.txt") ? files.has(name) : true,
-			readFileSync: (name: string) => files.get(name), writeFileSync: (name: string, value: string) => { files.set(name, value); } },
-		"node:path": path, "node:os": { homedir: () => fakeHome },
-		"node:crypto": { randomBytes: () => ({ toString: () => "generated-token-at-least-24-characters" }) },
-		"node:child_process": { spawn }, "node:process": { env: {} },
-	})[module] };
+	folder = fs.mkdtempSync(path.join(os.tmpdir(), "handwriting-bridge-test-"));
+	fs.writeFileSync(path.join(folder, "codex.exe"), "");
+	fs.mkdirSync(path.join(folder, ".codex"));
+	fs.writeFileSync(path.join(folder, ".codex", "config.toml"), 'model = "gpt-test"\n');
+	commands = [];
+	let signedIn = false;
+	port = 19000 + Math.floor(Math.random() * 10000);
+	settings = { url: `http://127.0.0.1:${port}`, token: "integration-token-at-least-24-characters" };
+	service = null;
+	const fakeProcess = { platform: "win32", env: { PATH: folder } };
+	const child = {
+		spawn: (_binary: string, args: string[]) => {
+			commands.push(args);
+			const task = Object.assign(new EventEmitter(), { kill: vi.fn() });
+			queueMicrotask(() => {
+				if (args[0] === "exec") fs.writeFileSync(args[args.indexOf("--output-last-message") + 1]!, "Text and $x^2$");
+				if (args[0] === "login" && args[1] !== "status") signedIn = true;
+				task.emit("close", args[0] === "login" && args[1] === "status" && !signedIn ? 1 : 0);
+			});
+			return task;
+		},
+	};
+	(globalThis as any).window = { require: (module: string) => ({
+		"node:fs": fs, "node:os": { ...os, homedir: () => folder }, "node:path": path,
+		"node:http": http, "node:crypto": crypto, "node:child_process": child, "node:process": fakeProcess,
+	} as Record<string, unknown>)[module] };
+	network.mockReset();
+	network.mockImplementation(async ({ url, headers }: { url: string; headers: Record<string, string> }) => {
+		const response = await fetch(url, { headers });
+		return { status: response.status, json: await response.json() };
+	});
 });
-afterEach(() => { (globalThis as any).window = originalWindow; });
+afterEach(() => {
+	service?.stop();
+	fs.rmSync(folder, { recursive: true, force: true });
+	(globalThis as any).window = originalWindow;
+});
 
-describe("desktop Codex service lifecycle", () => {
-	it("resolves the default from this computer's home and accepts another service folder", () => {
-		const service = new LocalCodexService(() => settings);
-		expect(service.root()).toBe(path.join(fakeHome, "Documents", "handwriting"));
-		settings.root = path.resolve("test", "another-installation");
-		expect(service.root()).toBe(settings.root);
-	});
-	it("starts the installed model once, binds for the iPad, and stops its own child", async () => {
-		network.mockRejectedValueOnce(new Error("not running"));
-		network.mockResolvedValue({ status: 200, json: { provider: "codex", ready: true, model: "gpt-test" } });
-		const service = new LocalCodexService(() => settings);
-		const [first, second] = await Promise.all([service.start(), service.start()]);
-		expect(first).toBe("generated-token-at-least-24-characters");
-		expect(second).toBe(first);
-		expect(spawn).toHaveBeenCalledTimes(1);
-		const [executable, args, options] = spawn.mock.calls[0]!;
-		expect(executable).toContain("codex-venv");
-		expect(args).toEqual(expect.arrayContaining(["--host", "0.0.0.0", "--port", "8765"]));
-		expect(options).toMatchObject({ windowsHide: true, stdio: "ignore" });
-		expect(network.mock.calls.every(([request]) => request.url === "http://127.0.0.1:8765/health")).toBe(true);
-		expect(Array.from(files.values())).toEqual([first]);
-		service.stop();
-		expect(processChild.kill).toHaveBeenCalledTimes(1);
-	});
-	it("reuses a running service and its existing token without taking ownership", async () => {
-		files.set(path.join(fakeHome, "Documents", "handwriting", ".tools", "codex-access-token.txt"), "existing-token-at-least-24-characters");
-		network.mockResolvedValue({ status: 200, json: { provider: "codex", ready: true, model: "gpt-test" } });
-		const service = new LocalCodexService(() => settings);
-		expect(await service.start()).toBe("existing-token-at-least-24-characters");
-		service.stop();
-		expect(spawn).not.toHaveBeenCalled();
-		expect(processChild.kill).not.toHaveBeenCalled();
-	});
-	it("reports an exited service and cleans up the failed launch", async () => {
-		network.mockRejectedValue(new Error("not running"));
-		processChild.exitCode = 1;
-		const service = new LocalCodexService(() => settings);
-		await expect(service.start()).rejects.toThrow("exited during startup");
-		expect(processChild.kill).toHaveBeenCalledTimes(1);
+describe("desktop Codex bridge", () => {
+	it("shares Codex login, hosts the iPad protocol, and keeps handwriting behind its token", async () => {
+		service = new LocalCodexService(() => settings);
+		await service.signIn();
+		expect(commands.slice(0, 3)).toEqual([["login", "status"], ["login"], ["login", "status"]]);
+		expect(await service.start()).toBe(settings.token);
+		const base = `http://127.0.0.1:${port}`;
+		const denied = await fetch(base + "/health");
+		expect(denied.status).toBe(401);
+		const headers = { Authorization: `Bearer ${settings.token}` };
+		const health = await fetch(base + "/health", { headers });
+		expect(await health.json()).toMatchObject({ provider: "codex", ready: true, model: "gpt-test" });
+		const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9YlMP9kAAAAASUVORK5CYII=";
+		const result = await fetch(base + "/recognize-note", { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+			body: JSON.stringify({ images: ["data:image/png;base64," + png] }) });
+		expect(result.status).toBe(200);
+		expect(await result.json()).toEqual({ markdown: "Text and $x^2$" });
+		expect(commands.some(args => args[0] === "exec" && args.includes("--image") && args.at(-2) === "--" &&
+			args.at(-1)?.startsWith("Transcribe the attached image(s)"))).toBe(true);
 	});
 });

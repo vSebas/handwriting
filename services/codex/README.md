@@ -1,27 +1,15 @@
-# Codex handwriting service
+# Codex handwriting bridge
 
-The Handwriting plugin sends selected pen ink images to this laptop service.
-The service uses the **signed-in Codex CLI** to transcribe mixed prose and math
-as editable Obsidian Markdown. It does not receive the note body or pasted
-images. The model comes from the laptop's Codex configuration.
+Install Codex CLI on the laptop and sign in with ChatGPT. The Handwriting plugin
+uses the same Codex installation and sign-in as Claudian. Desktop Obsidian hosts
+the token-protected iPad bridge directly; Python, uv, a repository checkout, and
+setup scripts are no longer required.
 
-On Windows, install [uv](https://docs.astral.sh/uv/getting-started/installation/)
-and sign in to the Codex CLI or desktop app with ChatGPT. The plugin reuses
-that sign-in; it does not store ChatGPT credentials. From this repository's
-root, run:
+Open Handwriting settings on the laptop and select **Test connection**. This
+also starts the bridge and generates its access token. On iPad, set **Laptop
+service URL** to `http://<laptop Wi-Fi IP>:8765` and sync or copy the access
+token. Keep the laptop awake with desktop Obsidian open.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File services\codex\setup.ps1
-```
-
-Keep the repository on your laptop. The desktop Handwriting plugin starts the
-service when Obsidian opens. If the repository is elsewhere, set **Laptop service
-folder** in Handwriting settings. **Test connection** shows the Codex model
-configured on the laptop. The plugin generates an access token and saves it in
-its settings. Sync that setting to iPad, or copy the token there.
-
-On iPad, set **Laptop service URL** to `http://<laptop Wi-Fi IP>:8765` and keep
-the laptop awake with desktop Obsidian open. Use the command **Transcribe all
-handwriting in this note**. Review each result before inserting Markdown or
-replacing its corresponding pen ink. Existing Markdown and pasted images are
-preserved.
+Use **Transcribe all handwriting in this note** or the lasso transcription
+command. Review each result before inserting Markdown or replacing ink.
+Existing Markdown and pasted images are preserved.

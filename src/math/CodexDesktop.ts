@@ -1,118 +1,181 @@
+/// <reference types="node" />
 import { checkCodexNote } from "./CodexService";
-import { timerHost } from "../util/RuntimeScheduler";
 
-interface ServiceChild {
-	exitCode: number | null;
-	on(event: "error", listener: (error: Error) => void): void;
-	kill(): boolean;
-}
+const PROMPT = `Transcribe the attached image(s) of handwritten notes into Obsidian Markdown.
+If multiple images are attached, the first is an overview and the rest are
+overlapping detail tiles in top-to-bottom, then left-to-right order. Use the
+detail tiles to read small writing and the overview to understand layout.
+Transcribe overlapping writing only once. Preserve all legible prose.
+Write equations as valid LaTeX in $...$ or $$...$$. Preserve arrows and clear
+relationships as symbols or concise labels, but do not invent relationships.
+If a word or formula is uncertain, mark the uncertain part as [unclear] rather
+than guessing. Do not describe the task, add a preface, or wrap the result in a
+code fence. Do not use tools or access any files beyond the attached image.
+Return only the Markdown transcription.`;
+const PNG_PREFIX = "data:image/png;base64,";
+const MAX_BODY = 12 * 1024 * 1024;
 
-/** Node is obtained only after the caller has established a desktop Obsidian host. */
-function node() {
+function desktopNode() {
 	const host = window as Window & { require?: (module: string) => unknown };
-	if (typeof host.require !== "function") throw new Error("Desktop service control is unavailable in this Obsidian window.");
+	if (typeof host.require !== "function") throw new Error("Codex hosting requires desktop Obsidian.");
 	return {
-		fs: host.require("node:fs") as {
-			existsSync(path: string): boolean;
-			readFileSync(path: string, encoding: "utf8"): string;
-			writeFileSync(path: string, data: string, options: { encoding: "utf8"; flag: "wx"; mode: number }): void;
-		},
-		path: host.require("node:path") as { join(...parts: string[]): string; resolve(path: string): string },
-		os: host.require("node:os") as { homedir(): string },
-		crypto: host.require("node:crypto") as { randomBytes(size: number): { toString(encoding: "base64url"): string } },
-		childProcess: host.require("node:child_process") as { spawn(command: string, args: string[], options: {
-			cwd: string; windowsHide: boolean; stdio: "ignore"; env: Record<string, string | undefined>;
-		}): ServiceChild },
-		process: host.require("node:process") as { env: Record<string, string | undefined> },
+		fs: host.require("node:fs") as typeof import("node:fs"),
+		path: host.require("node:path") as typeof import("node:path"),
+		os: host.require("node:os") as typeof import("node:os"),
+		crypto: host.require("node:crypto") as typeof import("node:crypto"),
+		http: host.require("node:http") as typeof import("node:http"),
+		child: host.require("node:child_process") as typeof import("node:child_process"),
+		process: host.require("node:process") as typeof import("node:process"),
 	};
 }
 
-export interface LocalCodexSettings { root: string; url: string; token: string }
+export interface LocalCodexSettings { url: string; token: string }
 
 export class LocalCodexService {
-	private child: ServiceChild | null = null;
+	private server: import("node:http").Server | null = null;
+	private serverToken: string | null = null;
 	private pending: Promise<string> | null = null;
 	private stopped = false;
-
+	private active = false;
 	constructor(private settings: () => LocalCodexSettings) {}
 
-	root(): string {
-		const { path, os } = node();
-		return path.resolve(this.settings().root.trim() || path.join(os.homedir(), "Documents", "handwriting"));
+	private binary(): string {
+		const { fs, path, os, process } = desktopNode();
+		const exe = process.platform === "win32" ? "codex.exe" : "codex";
+		const paths = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map(dir => path.join(dir, exe));
+		if (process.platform === "win32") {
+			const releases = path.join(os.homedir(), ".codex", "packages", "standalone", "releases");
+			if (fs.existsSync(releases)) {
+				paths.push(...fs.readdirSync(releases).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+					.map(name => path.join(releases, name, "bin", "codex.exe")));
+			}
+			if (process.env.APPDATA) paths.push(path.join(process.env.APPDATA, "npm", "node_modules", "@openai", "codex",
+				"vendor", "x86_64-pc-windows-msvc", "codex", "codex.exe"));
+		}
+		const found = paths.find(candidate => fs.existsSync(candidate));
+		if (!found) throw new Error("Install Codex CLI on this laptop and sign in with ChatGPT.");
+		return found;
 	}
 
-	installed(): boolean {
-		const { fs, path } = node();
-		const root = this.root();
-		return fs.existsSync(path.join(root, ".tools", "codex-venv", "Scripts", "python.exe"))
-			&& fs.existsSync(path.join(root, "services", "codex", "server.py"));
+	private run(binary: string, args: string[], timeout: number, cwd?: string): Promise<number> {
+		const { child, process } = desktopNode();
+		return new Promise((resolve, reject) => {
+			const task = child.spawn(binary, args, { cwd, windowsHide: true, stdio: "ignore", env: { ...process.env } });
+			const timer = setTimeout(() => { task.kill(); reject(new Error("Codex timed out.")); }, timeout);
+			task.once("error", error => { clearTimeout(timer); reject(error); });
+			task.once("close", code => { clearTimeout(timer); resolve(code ?? 1); });
+		});
+	}
+
+	private model(): string {
+		const { fs, path, os } = desktopNode();
+		try {
+			const config = fs.readFileSync(path.join(os.homedir(), ".codex", "config.toml"), "utf8");
+			return /^model\s*=\s*["']([A-Za-z0-9._-]+)["']/m.exec(config)?.[1] ?? "Codex default";
+		} catch { return "Codex default"; }
+	}
+
+	private async recognize(binary: string, images: string[]): Promise<string> {
+		const { fs, os, path } = desktopNode();
+		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "handwriting-codex-"));
+		try {
+			const output = path.join(dir, "transcription.md");
+			const args = ["exec", "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check",
+				"--ignore-user-config", "-C", dir, "--output-last-message", output];
+			for (const [index, image] of images.entries()) {
+				const file = path.join(dir, `handwriting-${index + 1}.png`);
+				await fs.promises.writeFile(file, Buffer.from(image.slice(PNG_PREFIX.length), "base64"));
+				args.push("--image", file);
+			}
+			const model = this.model();
+			if (model !== "Codex default") args.push("--model", model);
+			args.push("--", PROMPT);
+			if (await this.run(binary, args, 240_000, dir) !== 0) throw new Error("Codex failed.");
+			const markdown = (await fs.promises.readFile(output, "utf8")).trim();
+			if (!markdown || markdown.length > 100_000) throw new Error("Invalid transcription.");
+			return markdown;
+		} finally { await fs.promises.rm(dir, { recursive: true, force: true }); }
 	}
 
 	start(): Promise<string> {
-		if (this.pending) return this.pending;
-		this.pending = this.startOnce().finally(() => { this.pending = null; });
-		return this.pending;
+		return this.pending ??= this.startOnce().finally(() => { this.pending = null; });
 	}
 
 	private async startOnce(): Promise<string> {
 		if (this.stopped) throw new Error("Codex service startup was cancelled.");
-		if (!this.installed()) throw new Error("The Codex service is not installed at the configured folder. Run services\\codex\\setup.ps1 on the laptop.");
-		const { fs, path, crypto, childProcess, process } = node();
-		const root = this.root();
-		const tokenPath = path.join(root, ".tools", "codex-access-token.txt");
-		let token: string;
-		if (fs.existsSync(tokenPath)) {
-			token = fs.readFileSync(tokenPath, "utf8").trim();
-		} else {
-			const configured = this.settings().token.trim();
-			token = configured.length >= 24 ? configured : crypto.randomBytes(32).toString("base64url");
-			try { fs.writeFileSync(tokenPath, token, { encoding: "utf8", flag: "wx", mode: 0o600 }); }
-			catch (error) {
-				if ((error as { code?: string }).code !== "EEXIST") throw error;
-				token = fs.readFileSync(tokenPath, "utf8").trim();
-			}
+		const { crypto, http } = desktopNode();
+		const binary = this.binary();
+		if (await this.run(binary, ["login", "status"], 10_000) !== 0) {
+			throw new Error("Sign in to Codex with ChatGPT on this laptop, then try again.");
 		}
-		if (token.length < 24) throw new Error("The Codex service access-token file is invalid. Replace it with a token of at least 24 characters.");
-		const configuredUrl = new URL(this.settings().url);
-		if (configuredUrl.protocol !== "http:" || configuredUrl.username || configuredUrl.password || configuredUrl.pathname !== "/" || configuredUrl.search || configuredUrl.hash) {
-			throw new Error("For automatic startup, set a plain HTTP laptop service URL without a path or query.");
+		const url = new URL(this.settings().url);
+		if (url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+			throw new Error("Set a plain HTTP laptop service URL without a path or query.");
 		}
-		const port = configuredUrl.port || "8765";
-		const local = { url: `http://127.0.0.1:${port}`, token };
-		try { await checkCodexNote(local); return token; }
-		catch { /* Start the service if nothing answering on this port has our token. */ }
-		if (this.stopped) throw new Error("Codex service startup was cancelled.");
-		const python = path.join(root, ".tools", "codex-venv", "Scripts", "python.exe");
-		const script = path.join(root, "services", "codex", "server.py");
-		const child = childProcess.spawn(python, [script, "--host", "0.0.0.0", "--port", port,
-			"--token-file", tokenPath], {
-			cwd: root, windowsHide: true, stdio: "ignore",
-			env: { ...process.env },
-		});
-		this.child = child;
-		let launchError: Error | undefined;
-		child.on("error", error => { launchError = error; });
-		try {
-			const deadline = Date.now() + 120_000;
-			while (Date.now() < deadline) {
-				if (this.stopped) throw new Error("Codex service startup was cancelled.");
-				if (launchError || child.exitCode !== null) {
-					throw new Error("Codex service exited during startup. Check the service folder, Python environment, and port.");
+		const port = Number(url.port || "8765");
+		const token = this.settings().token.trim().length >= 24 ? this.settings().token.trim() : crypto.randomBytes(32).toString("base64url");
+		if (this.server) return this.serverToken!;
+		try { await checkCodexNote({ url: `http://127.0.0.1:${port}`, token }); return token; }
+		catch { /* No compatible local server is running. */ }
+		const server = http.createServer(async (req, res) => {
+			const reply = (status: number, value: Record<string, unknown>) => {
+				res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify(value));
+			};
+			if (req.headers.authorization !== `Bearer ${token}`) return reply(401, { error: "Invalid access token." });
+			if (req.method === "GET" && req.url === "/health") return reply(200, { provider: "codex", ready: true, model: this.model() });
+			if (req.method !== "POST" || req.url !== "/recognize-note") return reply(404, { error: "Unknown endpoint." });
+			if (this.active) return reply(429, { error: "Recognition already running." });
+			const length = Number(req.headers["content-length"] ?? 0);
+			if (!Number.isInteger(length) || length < 1 || length > MAX_BODY) return reply(413, { error: "Invalid request size." });
+			this.active = true;
+			try {
+				const chunks: Buffer[] = [];
+				let size = 0;
+				for await (const chunk of req) {
+					size += chunk.length;
+					if (size > MAX_BODY) throw new Error("Request too large.");
+					chunks.push(chunk);
 				}
-				try { await checkCodexNote(local); return token; }
-				catch { await new Promise<void>(resolve => timerHost().setTimeout(resolve, 700)); }
-			}
-			throw new Error("Codex service did not become ready within two minutes. Check the service installation.");
-		} catch (error) {
-			child.kill();
-			if (this.child === child) this.child = null;
-			throw error;
-		}
+				const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+				const images = (body as { images?: unknown })?.images;
+				if (!Array.isArray(images) || images.length < 1 || images.length > 9 ||
+					images.some(image => typeof image !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(image))) {
+					return reply(400, { error: "Expected one to nine PNG images." });
+				}
+				for (const image of images as string[]) {
+					const png = Buffer.from(image.slice(PNG_PREFIX.length), "base64");
+					if (png.length < 24 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" ||
+						png.readUInt32BE(16) * png.readUInt32BE(20) > 8_000_000) {
+						return reply(400, { error: "Invalid or oversized PNG image." });
+					}
+				}
+			reply(200, { markdown: await this.recognize(binary, images as string[]) });
+			} catch { reply(500, { error: "Codex recognition failed. Check sign-in and model access." }); }
+			finally { this.active = false; }
+		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(port, "0.0.0.0", () => { server.off("error", reject); resolve(); });
+			});
+			this.server = server;
+			this.serverToken = token;
+			return token;
+		} catch (error) { server.close(); throw error; }
+	}
+
+	async signIn(): Promise<void> {
+		const binary = this.binary();
+		if (await this.run(binary, ["login", "status"], 10_000) === 0) return;
+		if (await this.run(binary, ["login"], 300_000) !== 0) throw new Error("Codex sign-in did not complete.");
+		if (await this.run(binary, ["login", "status"], 10_000) !== 0) throw new Error("Codex sign-in could not be verified.");
 	}
 
 	stop(): void {
 		this.stopped = true;
-		this.child?.kill();
-		this.child = null;
+		this.server?.close();
+		this.server = null;
+		this.serverToken = null;
 	}
 }

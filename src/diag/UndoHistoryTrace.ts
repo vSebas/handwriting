@@ -101,8 +101,8 @@ interface ActiveTrace {
 	endReason?: UndoEndReason;
 	truncated: boolean;
 	droppedRecords: number;
-	quietTimer: ReturnType<typeof setTimeout> | null;
-	deadlineTimer: ReturnType<typeof setTimeout> | null;
+	quietTimer: number | null;
+	deadlineTimer: number | null;
 }
 
 let active: ActiveTrace | null = null;

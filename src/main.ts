@@ -357,7 +357,6 @@ const PDF_INK_CHANGED_DURING_BACKUP =
 interface HandwritingSettings {
 	codexServiceUrl: string;
 	codexServiceToken: string;
-	codexServiceRoot: string;
 	/** Named locations use their own schema; opaque records survive older builds. */
 	savedViews: unknown[];
 	/**
@@ -505,7 +504,6 @@ interface HandwritingSettings {
 const DEFAULT_SETTINGS: HandwritingSettings = {
 	codexServiceUrl: DEFAULT_CODEX_URL,
 	codexServiceToken: "",
-	codexServiceRoot: "",
 	cameras: {},
 	savedViews: [],
 	inkSizes: { pen: 1, highlighter: 1 },
@@ -1174,8 +1172,13 @@ export default class HandwritingPlugin extends Plugin {
 	private codexService: LocalCodexService | null = null;
 	private getLocalCodexService(): LocalCodexService {
 		return this.codexService ??= new LocalCodexService(() => ({
-			root: this.settings.codexServiceRoot, url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken,
+			url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken,
 		}));
+	}
+	async signInToCodex(): Promise<void> {
+		if (!Platform.isDesktopApp) throw new Error("Sign in on the laptop running desktop Obsidian.");
+		await this.getLocalCodexService().signIn();
+		await this.startLocalCodexService();
 	}
 	async startLocalCodexService(): Promise<void> {
 		if (!Platform.isDesktopApp) return;
@@ -2049,7 +2052,7 @@ export default class HandwritingPlugin extends Plugin {
 		await this.loadSettings();
 		if (Platform.isDesktopApp && typeof (window as Window & { require?: unknown }).require === "function") {
 			const service = this.getLocalCodexService();
-			if (service.installed()) void this.startLocalCodexService().catch(error =>
+			void this.startLocalCodexService().catch(error =>
 				new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not start the Codex service."}`));
 		}
 
@@ -5342,12 +5345,13 @@ export default class HandwritingPlugin extends Plugin {
 		// missing file (null), an array or a bare primitive is not a settings
 		// object and carries nothing forward - spreading a string would spill
 		// its characters in under numeric keys.
-		const carried = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+		const carried = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? { ...raw } : {};
+		// Retire the former Python service folder while preserving unrelated settings from newer builds.
+		delete (carried as Record<string, unknown>).codexServiceRoot;
 		this.settings = {
 			...carried,
 			codexServiceUrl: typeof raw?.codexServiceUrl === "string" ? raw.codexServiceUrl : DEFAULT_CODEX_URL,
 			codexServiceToken: typeof raw?.codexServiceToken === "string" ? raw.codexServiceToken : "",
-			codexServiceRoot: typeof raw?.codexServiceRoot === "string" ? raw.codexServiceRoot : "",
 			// The retired canvas page's named views: carried through untouched, so an older build still finds them.
 			savedViews: Array.isArray(raw?.savedViews) ? raw.savedViews : [],
 			cameras: raw?.cameras && typeof raw.cameras === "object" ? raw.cameras : {},
@@ -6512,10 +6516,9 @@ export class HandwritingSettingTab extends PluginSettingTab {
 						name: "Set up Codex recognition",
 						render: setting => { setting.setDesc(createFragment(fragment => {
 							const steps = fragment.createEl("ol");
-							steps.createEl("li", { text: "On the laptop, install Codex CLI or the Codex desktop app and sign in with ChatGPT. The plugin reuses that sign-in." });
-							steps.createEl("li", { text: "From this fork's source folder, run: powershell -ExecutionPolicy Bypass -File services\\codex\\setup.ps1. Keep the folder on the laptop." });
-							steps.createEl("li", { text: "Restart desktop Obsidian. Test the connection below. On iPad, use the laptop's Wi-Fi address and sync or copy the access token." });
-							fragment.createEl("a", { text: "Full Codex service guide", href: "https://github.com/vSebas/handwriting/blob/master/services/codex/README.md" });
+							steps.createEl("li", { text: "Install Codex CLI on the laptop and sign in with ChatGPT. Handwriting shares that sign-in with Claudian." });
+							steps.createEl("li", { text: "Keep desktop Obsidian running. Handwriting hosts the iPad bridge automatically; no Python, uv, repository checkout, or setup script is needed." });
+							steps.createEl("li", { text: "On iPad, use the laptop's Wi-Fi address and sync or copy the service access token." });
 						})); },
 					},
 					{
@@ -6536,13 +6539,16 @@ export class HandwritingSettingTab extends PluginSettingTab {
 							});
 						}); },
 					},
-					{
-						name: "Laptop service folder",
-						desc: "Folder containing services/codex and .tools. Empty uses Documents/handwriting on this laptop. Desktop only.",
-						render: setting => { setting.addText(text => text.setPlaceholder("Documents\\handwriting").setValue(this.plugin.settings.codexServiceRoot).onChange(value => {
-							this.plugin.settings.codexServiceRoot = value.trim(); this.plugin.saveSettingsNow();
-						})); },
-					},
+				{
+					name: "ChatGPT sign-in",
+					desc: "Use the installed Codex CLI to open ChatGPT sign-in on this laptop. Claudian uses the same account.",
+					render: setting => { setting.addButton(button => button.setButtonText("Sign in on laptop").setDisabled(!Platform.isDesktopApp).onClick(async () => {
+						button.setDisabled(true);
+						try { await this.plugin.signInToCodex(); setting.setDesc("Codex sign-in verified. Handwriting is ready."); }
+						catch (error) { setting.setDesc(error instanceof Error ? error.message : "Codex sign-in failed."); }
+						finally { button.setDisabled(false); }
+					})); },
+				},
 					{
 						name: "Codex connection",
 						desc: "Check the laptop service and Codex sign-in without sending handwriting.",

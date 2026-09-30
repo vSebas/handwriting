@@ -17,7 +17,7 @@ strokes and run **Lasso: transcribe handwriting**. That dialog can insert at the
 saved cursor and remove only the selected pen strokes. Any graph outside the
 lasso remains as editable original ink.
 
-Follow [the Codex service setup](../services/codex/README.md) on the laptop.
+Follow [the Codex CLI setup](../services/codex/README.md) on the laptop.
 On iPad, set the laptop service URL to its Wi-Fi address and sync or copy the
 access token. The laptop must remain reachable. The plugin uses the model
 configured in the laptop's Codex CLI; **Test connection** shows its name.

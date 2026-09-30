@@ -9,7 +9,7 @@ handwriting in this note** or **Lasso: transcribe handwriting**, then review
 the resulting prose and LaTeX as editable Markdown. Existing note text and
 pasted images stay in place. You can insert beside matching note sections, at
 the captured cursor, or at the end, and optionally replace the corresponding
-pen ink. See [the workflow](docs/math.md) and [laptop service setup](services/codex/README.md).
+pen ink. See [the workflow](docs/math.md) and [Codex CLI setup](services/codex/README.md).
 
 The community installation instructions below refer to the upstream plugin;
 install this fork's build to use recognition. For BRAT, add `vSebas/handwriting`
