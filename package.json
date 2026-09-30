@@ -1,6 +1,6 @@
 {
 	"name": "handwriting",
-	"version": "1.4.22-beta.10",
+	"version": "1.4.22-beta.11",
 	"description": "Handwrite, highlight, erase and lasso on your notes and PDFs. Your notes stay Markdown.",
 	"main": "main.js",
 	"private": true,
@@ -35,8 +35,5 @@
 	},
 	"overrides": {
 		"@codemirror/state": "6.5.0"
-	},
-	"dependencies": {
-		"onnxruntime-web": "1.26.0"
 	}
 }

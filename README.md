@@ -4,28 +4,16 @@ Handwrite, highlight, erase and lasso directly on your notes and PDFs. Your note
 
 Open a note and write. The note stays a `.md` file.
 
-**This fork adds handwriting-to-LaTeX.** Lasso an equation, recognize it, review
-the result, and insert ordinary Obsidian math. Choose Hand-to-TeX on your device
-or UniMERNet running on your laptop. See [setup, iPad workflow, and compatibility](docs/math.md)
-and [UniMERNet service setup](services/unimernet/README.md).
+**This fork transcribes mixed handwriting with Codex.** Run **Transcribe all
+handwriting in this note** or **Lasso: transcribe handwriting**, then review
+the resulting prose and LaTeX as editable Markdown. Existing note text and
+pasted images stay in place. You can insert beside matching note sections, at
+the captured cursor, or at the end, and optionally replace the corresponding
+pen ink. See [the workflow](docs/math.md) and [laptop service setup](services/codex/README.md).
+
 The community installation instructions below refer to the upstream plugin;
 install this fork's build to use recognition. For BRAT, add `vSebas/handwriting`
-and select the corresponding published release. Version `1.4.22-beta.3` adds
-the optional UniMERNet provider. Version `1.4.22-beta.4` adds automatic service
-startup on the laptop. Version `1.4.22-beta.5` adds setup guidance in Handwriting
-settings. Version `1.4.22-beta.6` adds optional English handwritten-text
-recognition through the same laptop service. Version `1.4.22-beta.8` changes
-**Transcribe all handwriting in this note** to show a single ink image. Select
-the whole image or draw an area, then use the laptop's signed-in Codex vision
-model to transcribe mixed prose and equations as editable Markdown. The local
-text and math models remain optional for focused selections. Existing Markdown
-text, pasted image links, and original ink remain in place. On iPad, the laptop
-service must be reachable. See [the workflow and limits](docs/handwriting-ocr-plan.md).
-Version `1.4.22-beta.9` adds section-aware insertion beside existing text and
-images, insertion at the captured cursor, and optional replacement of reviewed
-pen ink.
-Version `1.4.22-beta.10` automatically uses the matching section and disables
-manual placement controls when a reviewed section's ink is set to be replaced.
+and select the corresponding published release.
 
 ## removing the plugin
 

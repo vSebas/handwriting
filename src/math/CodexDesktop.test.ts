@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import path from "node:path";
-import { LocalUniMERService } from "./UniMERDesktop";
+import { LocalCodexService } from "./CodexDesktop";
 
 const network = vi.hoisted(() => vi.fn());
 vi.mock("obsidian", async original => ({ ...await original<object>(), requestUrl: network }));
@@ -15,7 +15,7 @@ beforeEach(() => {
 	settings.root = "";
 	files.clear(); network.mockReset(); spawn.mockClear(); processChild.exitCode = null; processChild.killed = false; processChild.kill.mockClear();
 	(globalThis as any).window = { setTimeout, clearTimeout, require: (module: string) => ({
-		"node:fs": { existsSync: (name: string) => name.endsWith("unimernet-access-token.txt") ? files.has(name) : true,
+		"node:fs": { existsSync: (name: string) => name.endsWith("codex-access-token.txt") ? files.has(name) : true,
 			readFileSync: (name: string) => files.get(name), writeFileSync: (name: string, value: string) => { files.set(name, value); } },
 		"node:path": path, "node:os": { homedir: () => fakeHome },
 		"node:crypto": { randomBytes: () => ({ toString: () => "generated-token-at-least-24-characters" }) },
@@ -24,23 +24,23 @@ beforeEach(() => {
 });
 afterEach(() => { (globalThis as any).window = originalWindow; });
 
-describe("desktop UniMERNet lifecycle", () => {
+describe("desktop Codex service lifecycle", () => {
 	it("resolves the default from this computer's home and accepts another service folder", () => {
-		const service = new LocalUniMERService(() => settings);
+		const service = new LocalCodexService(() => settings);
 		expect(service.root()).toBe(path.join(fakeHome, "Documents", "handwriting"));
 		settings.root = path.resolve("test", "another-installation");
 		expect(service.root()).toBe(settings.root);
 	});
 	it("starts the installed model once, binds for the iPad, and stops its own child", async () => {
 		network.mockRejectedValueOnce(new Error("not running"));
-		network.mockResolvedValue({ status: 200, json: { provider: "unimernet", ready: true } });
-		const service = new LocalUniMERService(() => settings);
+		network.mockResolvedValue({ status: 200, json: { provider: "codex", ready: true, model: "gpt-test" } });
+		const service = new LocalCodexService(() => settings);
 		const [first, second] = await Promise.all([service.start(), service.start()]);
 		expect(first).toBe("generated-token-at-least-24-characters");
 		expect(second).toBe(first);
 		expect(spawn).toHaveBeenCalledTimes(1);
 		const [executable, args, options] = spawn.mock.calls[0]!;
-		expect(executable).toContain("unimer-venv");
+		expect(executable).toContain("codex-venv");
 		expect(args).toEqual(expect.arrayContaining(["--host", "0.0.0.0", "--port", "8765"]));
 		expect(options).toMatchObject({ windowsHide: true, stdio: "ignore" });
 		expect(network.mock.calls.every(([request]) => request.url === "http://127.0.0.1:8765/health")).toBe(true);
@@ -49,9 +49,9 @@ describe("desktop UniMERNet lifecycle", () => {
 		expect(processChild.kill).toHaveBeenCalledTimes(1);
 	});
 	it("reuses a running service and its existing token without taking ownership", async () => {
-		files.set(path.join(fakeHome, "Documents", "handwriting", ".tools", "unimernet-access-token.txt"), "existing-token-at-least-24-characters");
-		network.mockResolvedValue({ status: 200, json: { provider: "unimernet", ready: true } });
-		const service = new LocalUniMERService(() => settings);
+		files.set(path.join(fakeHome, "Documents", "handwriting", ".tools", "codex-access-token.txt"), "existing-token-at-least-24-characters");
+		network.mockResolvedValue({ status: 200, json: { provider: "codex", ready: true, model: "gpt-test" } });
+		const service = new LocalCodexService(() => settings);
 		expect(await service.start()).toBe("existing-token-at-least-24-characters");
 		service.stop();
 		expect(spawn).not.toHaveBeenCalled();
@@ -60,7 +60,7 @@ describe("desktop UniMERNet lifecycle", () => {
 	it("reports an exited service and cleans up the failed launch", async () => {
 		network.mockRejectedValue(new Error("not running"));
 		processChild.exitCode = 1;
-		const service = new LocalUniMERService(() => settings);
+		const service = new LocalCodexService(() => settings);
 		await expect(service.start()).rejects.toThrow("exited during startup");
 		expect(processChild.kill).toHaveBeenCalledTimes(1);
 	});

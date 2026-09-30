@@ -2,14 +2,13 @@ import { App, Modal, Notice, Platform, Setting } from "obsidian";
 import { noteInkImage, noteInkTiles } from "./MathInkImage";
 import { imageSelectionBounds, noteInkSections, type NoteInkSource, type NotePlacement, type NoteStrokeSnapshot } from "./WholeNoteInk";
 
-type Kind = "codex" | "text" | "math";
 interface ReviewBlock {
-	kind: Kind; value: string; card: HTMLElement; field: HTMLTextAreaElement;
+	value: string; card: HTMLElement; field: HTMLTextAreaElement;
 	offset: number; suggestedOffset: number; placementSelect: HTMLSelectElement | null;
 	strokes: NoteStrokeSnapshot[]; replaceInk: boolean;
 }
 export interface NoteCommit { blocks: Array<{ markdown: string; offset: number }>; placement: NotePlacement; combined: string; remove: NoteStrokeSnapshot[] }
-export type NoteImageRecognizer = (images: string[], kind: Kind, signal: AbortSignal,
+export type NoteImageRecognizer = (images: string[], signal: AbortSignal,
 	progress: (message: string) => void) => Promise<string>;
 
 /** The user selects visual crops; no stroke clustering can cut a word apart. */
@@ -24,7 +23,6 @@ export class WholeNoteRecognitionModal extends Modal {
 	private selectedFrom: [number, number] = [0, 0];
 	private selectedTo: [number, number] = [1, 1];
 	private dragStart: [number, number] | null = null;
-	private kind: Kind = "codex";
 	private placement: NotePlacement = "sections";
 	private selecting = false;
 	private abort = new AbortController();
@@ -96,9 +94,6 @@ export class WholeNoteRecognitionModal extends Modal {
 				});
 				selectionButton = button.buttonEl;
 			})
-			.addDropdown(dropdown => dropdown.addOption("codex", "Mixed handwriting (Codex)")
-				.addOption("text", "Text only (local)").addOption("math", "Equation only (local)")
-				.onChange(value => { this.kind = value === "math" ? "math" : value === "text" ? "text" : "codex"; }))
 			.addButton(button => button.setButtonText("Select whole image").onClick(() => {
 				this.selectedFrom = [0, 0]; this.selectedTo = [1, 1]; this.paintSelection();
 			}))
@@ -110,18 +105,17 @@ export class WholeNoteRecognitionModal extends Modal {
 					const bounds = imageSelectionBounds(this.source.bounds, this.selectedFrom, this.selectedTo);
 					const sections = noteInkSections(this.source, bounds);
 					if (sections.length > 12) throw new Error("This selection crosses more than twelve handwriting sections. Select a smaller part of the note.");
-					const kind = this.kind;
 					for (const [index, section] of sections.entries()) {
 						this.status.setText(`Recognizing section ${index + 1} of ${sections.length}…`);
 						const preview = noteInkImage(section.ink, section.bounds);
-						const images = kind === "codex" ? noteInkTiles(section.ink, section.bounds) : [preview];
-						const value = await this.recognize(images, kind, this.abort.signal, message => {
+						const images = noteInkTiles(section.ink, section.bounds);
+						const value = await this.recognize(images, this.abort.signal, message => {
 							if (!this.closed) this.status.setText(`Section ${index + 1}: ${message}`);
 						});
 						if (this.closed) return;
 						const complete = section.strokes.filter(stroke => stroke.bounds.left >= bounds.left && stroke.bounds.right <= bounds.right &&
 							stroke.bounds.top >= bounds.top && stroke.bounds.bottom <= bounds.bottom);
-						this.addBlock(kind, value, preview, section.anchor.offset, complete);
+						this.addBlock(value, preview, section.anchor.offset, complete);
 					}
 					this.status.setText("Review each reading and its insertion section. Select another area if needed.");
 				} catch (error) {
@@ -184,16 +178,16 @@ export class WholeNoteRecognitionModal extends Modal {
 		this.selectionEl.style.height = `${Math.abs(y2 - y1) * 100}%`;
 	}
 
-	private addBlock(kind: Kind, value: string, image: string, offset: number, strokes: NoteStrokeSnapshot[]): void {
+	private addBlock(value: string, image: string, offset: number, strokes: NoteStrokeSnapshot[]): void {
 		const card = this.list.createDiv({ cls: "handwriting-image-result" });
 		card.createEl("img", { attr: { src: image, alt: "Recognized handwriting selection" } });
-		const field = card.createEl("textarea", { attr: { "aria-label": kind === "math" ? "Recognized LaTeX" : kind === "codex" ? "Recognized Markdown" : "Recognized text", rows: "3" } });
+		const field = card.createEl("textarea", { attr: { "aria-label": "Recognized Markdown", rows: "3" } });
 		field.value = value;
-		const block: ReviewBlock = { kind, value, card, field, offset, suggestedOffset: offset,
+		const block: ReviewBlock = { value, card, field, offset, suggestedOffset: offset,
 			placementSelect: null, strokes, replaceInk: false };
 		this.blocks.push(block);
 		field.addEventListener("input", () => { block.value = field.value; this.updateOutput(); });
-		new Setting(card).setName(kind === "math" ? "Equation" : kind === "codex" ? "Mixed Markdown" : "Text")
+		new Setting(card).setName("Mixed Markdown")
 			.addDropdown(dropdown => {
 				for (const anchor of this.source.anchors) dropdown.addOption(String(anchor.offset), anchor.label);
 				dropdown.setValue(String(offset)).onChange(value => { block.offset = Number(value); });
@@ -211,7 +205,7 @@ export class WholeNoteRecognitionModal extends Modal {
 				card.remove(); this.updateOutput(); this.syncReplacementPlacement();
 			}));
 		new Setting(card).setName(`Replace this section's pen ink (${strokes.length} strokes)`)
-			.setDesc("Uses the suggested section location automatically. Other ink, text, and images stay in the note.")
+			.setDesc("Removes every pen stroke in this selected section, including drawings. Leave this off to keep a graph, or lasso only the writing for replacement. Other text and pasted images stay in the note.")
 			.addToggle(toggle => toggle.setValue(false).setDisabled(strokes.length === 0)
 				.onChange(value => {
 					block.replaceInk = value;
@@ -242,7 +236,7 @@ export class WholeNoteRecognitionModal extends Modal {
 
 	private blockMarkdown(block: ReviewBlock): string {
 		const value = block.value.trim();
-		return value ? block.kind === "math" ? `$$\n${value}\n$$` : value : "";
+		return value;
 	}
 
 	onClose(): void {

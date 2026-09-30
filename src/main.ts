@@ -1,16 +1,9 @@
 import { requestUrl, App, Command, MarkdownRenderChild, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, type SettingGroup, TAbstractFile, TFile, View, WorkspaceLeaf, normalizePath } from "obsidian";
-import { MathRecognitionModal } from "./math/MathRecognitionModal";
-import { TextRecognitionModal } from "./math/TextRecognitionModal";
 import { WholeNoteRecognitionModal } from "./math/WholeNoteRecognitionModal";
+import { CodexSelectionModal } from "./math/CodexSelectionModal";
 import { captureWholeNoteInsertionTarget, noteInkSnapshot } from "./math/WholeNoteInk";
-import { mathInk, type MathInk } from "./math/MathRecognition";
-import { captureMathTarget } from "./math/MathInsertionTarget";
-import { captureTextTarget } from "./math/TextInsertionTarget";
-import { handToTex } from "./math/HandToTex";
-import { uniMERNet, checkUniMERNet, checkHandwrittenText, checkCodexNote, recognizeHandwrittenText, recognizeHandwrittenTextImage, recognizeMathImage, recognizeWholeNoteImages, DEFAULT_UNIMER_URL } from "./math/UniMERNet";
-import { LocalUniMERService } from "./math/UniMERDesktop";
-import type { MathRecognizer } from "./math/MathRecognizer";
-import { MathModels } from "./math/MathModels";
+import { checkCodexNote, recognizeWholeNoteImages, DEFAULT_CODEX_URL } from "./math/CodexService";
+import { LocalCodexService } from "./math/CodexDesktop";
 import {
 	clearGatedCommandAction,
 	clearGatedCommandActions,
@@ -362,10 +355,9 @@ const PDF_INK_CHANGED_DURING_BACKUP =
 	"Handwriting: the ink changed while its backup was being made. nothing was deleted. run Delete all ink again if you still want to remove it.";
 
 interface HandwritingSettings {
-	mathProvider: "hand-to-tex" | "unimernet";
-	uniMERUrl: string;
-	uniMERToken: string;
-	uniMERServiceRoot: string;
+	codexServiceUrl: string;
+	codexServiceToken: string;
+	codexServiceRoot: string;
 	/** Named locations use their own schema; opaque records survive older builds. */
 	savedViews: unknown[];
 	/**
@@ -511,10 +503,9 @@ interface HandwritingSettings {
 }
 
 const DEFAULT_SETTINGS: HandwritingSettings = {
-	mathProvider: "hand-to-tex",
-	uniMERUrl: DEFAULT_UNIMER_URL,
-	uniMERToken: "",
-	uniMERServiceRoot: "",
+	codexServiceUrl: DEFAULT_CODEX_URL,
+	codexServiceToken: "",
+	codexServiceRoot: "",
 	cameras: {},
 	savedViews: [],
 	inkSizes: { pen: 1, highlighter: 1 },
@@ -1178,58 +1169,21 @@ export function bindRecoveryNotices(
 }
 
 export default class HandwritingPlugin extends Plugin {
-	private mathModal: MathRecognitionModal | null = null;
-	private textModal: TextRecognitionModal | null = null;
 	private wholeNoteModal: WholeNoteRecognitionModal | null = null;
-	private mathModels: MathModels | null = null;
-	private mathService: LocalUniMERService | null = null;
-	private getLocalUniMERService(): LocalUniMERService {
-		return this.mathService ??= new LocalUniMERService(() => ({
-			root: this.settings.uniMERServiceRoot, url: this.settings.uniMERUrl, token: this.settings.uniMERToken,
+	private selectionModal: CodexSelectionModal | null = null;
+	private codexService: LocalCodexService | null = null;
+	private getLocalCodexService(): LocalCodexService {
+		return this.codexService ??= new LocalCodexService(() => ({
+			root: this.settings.codexServiceRoot, url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken,
 		}));
 	}
-	async startLocalUniMERService(): Promise<void> {
+	async startLocalCodexService(): Promise<void> {
 		if (!Platform.isDesktopApp) return;
-		const token = await this.getLocalUniMERService().start();
+		const token = await this.getLocalCodexService().start();
 		if (this.unloaded) return;
-		if (this.settings.uniMERToken !== token) {
-			this.settings.uniMERToken = token;
+		if (this.settings.codexServiceToken !== token) {
+			this.settings.codexServiceToken = token;
 			await this.persistSettings();
-		}
-	}
-	private mathRecognizer(): MathRecognizer {
-		if (this.settings.mathProvider !== "unimernet") return handToTex(this.getMathModels());
-		const provider = uniMERNet({ url: this.settings.uniMERUrl, token: this.settings.uniMERToken });
-		return { name: provider.name, description: provider.description,
-			recognize: async (ink, signal, progress) => {
-				if (Platform.isDesktopApp) {
-					progress("Starting UniMERNet on this laptop...");
-					await this.startLocalUniMERService();
-				}
-				if (signal.aborted) throw new Error("Recognition cancelled.");
-				return uniMERNet({ url: this.settings.uniMERUrl, token: this.settings.uniMERToken }).recognize(ink, signal, progress);
-			},
-		};
-	}
-	private async recognizeSelectedText(ink: MathInk, signal: AbortSignal, progress: (message: string) => void): Promise<string> {
-		if (Platform.isDesktopApp) {
-			progress("Starting the recognition service on this laptop...");
-			await this.startLocalUniMERService();
-		}
-		if (signal.aborted) throw new Error("Recognition cancelled.");
-		return recognizeHandwrittenText({ url: this.settings.uniMERUrl, token: this.settings.uniMERToken }, ink, signal, progress);
-	}
-	getMathModels(): MathModels {
-		return this.mathModels ??= new MathModels(this.app.vault.adapter,
-			this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`);
-	}
-	async removeHandToTexModelsForUniMERNet(): Promise<void> {
-		if (this.settings.mathProvider !== "unimernet") return;
-		try {
-			const removed = await this.getMathModels().remove();
-			if (removed > 0) new Notice(`Handwriting: removed ${removed} unused Hand-to-TeX model files from this device.`);
-		} catch (error) {
-			new Notice(`Handwriting: could not remove old Hand-to-TeX models: ${error instanceof Error ? error.message : "Unknown error."}`);
 		}
 	}
 	store!: PageStore;
@@ -2093,11 +2047,10 @@ export default class HandwritingPlugin extends Plugin {
 		};
 		bindRecoveryNotices(this.store, (pageId) => this.noteNameFor(pageId));
 		await this.loadSettings();
-		void this.removeHandToTexModelsForUniMERNet();
 		if (Platform.isDesktopApp && typeof (window as Window & { require?: unknown }).require === "function") {
-			const service = this.getLocalUniMERService();
-			if (service.installed()) void this.startLocalUniMERService().catch(error =>
-				new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not start UniMERNet."}`));
+			const service = this.getLocalCodexService();
+			if (service.installed()) void this.startLocalCodexService().catch(error =>
+				new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not start the Codex service."}`));
 		}
 
 		this.registerView(HANDWRITING_PEN_LAB_VIEW_TYPE, (leaf) => new PenLabView(leaf));
@@ -3071,51 +3024,37 @@ export default class HandwritingPlugin extends Plugin {
 			},
 		});
 		this.addCommand({
-			id: "recognize-selected-math",
-			name: "Lasso: convert handwriting to LaTeX",
-			checkCallback: (checking) => {
-				const surface = this.activeInkSurface();
-				if (!surface) return false;
-				if (!checking) {
-					try {
-						const ink = mathInk(surface.kind === "inline"
-							? surface.overlay.selectedStrokesForMath()
-							: surface.controller.selectedStrokesForMath());
-						const active = this.app.workspace.activeEditor;
-						const insert = surface.kind === "inline" && active
-							? captureMathTarget(active, () => this.app.workspace.activeEditor)
-							: undefined;
-						this.textModal?.close();
-						this.mathModal?.close();
-						this.mathModal = new MathRecognitionModal(this.app, ink, this.mathRecognizer(), insert);
-						this.mathModal.open();
-					} catch (error) {
-						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read the selected ink."}`);
-					}
-				}
-				return true;
-			},
-		});
-		this.addCommand({
-			id: "recognize-selected-text",
-			name: "Lasso: convert handwriting to text",
+			id: "recognize-selected-handwriting",
+			name: "Lasso: transcribe handwriting",
 			checkCallback: checking => {
 				const surface = this.activeInkSurface();
 				if (!surface) return false;
 				if (!checking) {
 					try {
-						const ink = mathInk(surface.kind === "inline"
+						const strokes = surface.kind === "inline"
 							? surface.overlay.selectedStrokesForMath()
-							: surface.controller.selectedStrokesForMath());
+							: surface.controller.selectedStrokesForMath();
+						const source = noteInkSnapshot(strokes);
 						const active = this.app.workspace.activeEditor;
-						const insert = surface.kind === "inline" && active
-							? captureTextTarget(active, () => this.app.workspace.activeEditor)
-							: undefined;
-						this.mathModal?.close();
-						this.textModal?.close();
-						this.textModal = new TextRecognitionModal(this.app, ink,
-							(selected, signal, progress) => this.recognizeSelectedText(selected, signal, progress), insert);
-						this.textModal.open();
+						const file = surface.kind === "inline" ? active?.file : null;
+						const overlay = surface.kind === "inline" ? surface.overlay : null;
+						const insert = overlay && active?.editor && file
+							? captureWholeNoteInsertionTarget(active, () => this.app.workspace.activeEditor)
+							: null;
+						this.selectionModal?.close();
+						this.selectionModal = new CodexSelectionModal(this.app, source,
+							async (images, signal, progress) => {
+								if (Platform.isDesktopApp) {
+									progress("Starting the Codex service on this laptop...");
+									await this.startLocalCodexService();
+								}
+								return recognizeWholeNoteImages({ url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken }, images, signal, progress);
+							}, insert && overlay && file ? (markdown, replaceInk) => {
+								if (replaceInk) overlay.validateTranscribedInk(file.path, source.strokes);
+								insert([{ markdown, offset: 0 }], "cursor", markdown);
+								if (replaceInk) overlay.removeTranscribedInk(file.path, source.strokes);
+							} : undefined);
+						this.selectionModal.open();
 					} catch (error) {
 						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read the selected ink."}`);
 					}
@@ -3144,17 +3083,13 @@ export default class HandwritingPlugin extends Plugin {
 						const insert = captureWholeNoteInsertionTarget(active, () => this.app.workspace.activeEditor);
 						this.wholeNoteModal?.close();
 						this.wholeNoteModal = new WholeNoteRecognitionModal(this.app, snapshot,
-							async (images, kind, signal, progress) => {
+							async (images, signal, progress) => {
 								if (Platform.isDesktopApp) {
 									progress("Starting the recognition service on this laptop...");
-									await this.startLocalUniMERService();
+									await this.startLocalCodexService();
 								}
-								const settings = { url: this.settings.uniMERUrl, token: this.settings.uniMERToken };
-								return kind === "codex"
-									? recognizeWholeNoteImages(settings, images, signal, progress)
-									: kind === "text"
-										? recognizeHandwrittenTextImage(settings, images[0]!, signal, progress)
-										: recognizeMathImage(settings, images[0]!, signal, progress);
+								const settings = { url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken };
+								return recognizeWholeNoteImages(settings, images, signal, progress);
 							},
 							result => {
 								if (result.remove.length) overlay.validateTranscribedInk(file.path, result.remove);
@@ -4791,13 +4726,10 @@ export default class HandwritingPlugin extends Plugin {
 		return true;
 	}
 	onunload(): void {
-		this.mathModal?.close();
-		this.mathModal = null;
-		this.textModal?.close();
 		this.wholeNoteModal?.close();
-		this.textModal = null;
+		this.selectionModal?.close();
 		this.wholeNoteModal = null;
-		this.mathService?.stop();
+		this.codexService?.stop();
 		// First, so that anything still waiting on onLayoutReady finds it set.
 		this.unloaded = true;
 		this.notePaper?.destroy();
@@ -5413,10 +5345,9 @@ export default class HandwritingPlugin extends Plugin {
 		const carried = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
 		this.settings = {
 			...carried,
-			mathProvider: raw?.mathProvider === "unimernet" ? "unimernet" : "hand-to-tex",
-			uniMERUrl: typeof raw?.uniMERUrl === "string" ? raw.uniMERUrl : DEFAULT_UNIMER_URL,
-			uniMERToken: typeof raw?.uniMERToken === "string" ? raw.uniMERToken : "",
-			uniMERServiceRoot: typeof raw?.uniMERServiceRoot === "string" ? raw.uniMERServiceRoot : "",
+			codexServiceUrl: typeof raw?.codexServiceUrl === "string" ? raw.codexServiceUrl : DEFAULT_CODEX_URL,
+			codexServiceToken: typeof raw?.codexServiceToken === "string" ? raw.codexServiceToken : "",
+			codexServiceRoot: typeof raw?.codexServiceRoot === "string" ? raw.codexServiceRoot : "",
 			// The retired canvas page's named views: carried through untouched, so an older build still finds them.
 			savedViews: Array.isArray(raw?.savedViews) ? raw.savedViews : [],
 			cameras: raw?.cameras && typeof raw.cameras === "object" ? raw.cameras : {},
@@ -6571,86 +6502,59 @@ export class HandwritingSettingTab extends PluginSettingTab {
 			},
 			{
 				type: "group",
-				heading: "Handwriting to LaTeX",
+				heading: "Handwriting recognition",
 				items: [
 					{
-						name: "Recognition provider",
-						desc: "Hand-to-TeX is the default. Select UniMERNet to recognize selected handwriting on your laptop; follow the setup steps below.",
-						control: { type: "dropdown", key: "mathProvider", options: { "hand-to-tex": "Hand-to-TeX (on device)", unimernet: "UniMERNet (local service)" } },
+						name: "Mixed handwriting with Codex",
+						desc: "Run Transcribe all handwriting in this note. Review the Markdown and LaTeX before inserting or replacing pen ink. The laptop's signed-in Codex CLI reads the selected ink images.",
 					},
 					{
-						name: "Set up UniMERNet",
-						aliases: ["UniMERNet setup", "install UniMERNet", "math recognition setup"],
-						render: setting => this.renderUniMERSetup(setting),
+						name: "Set up Codex recognition",
+						render: setting => { setting.setDesc(createFragment(fragment => {
+							const steps = fragment.createEl("ol");
+							steps.createEl("li", { text: "On the laptop, install Codex CLI or the Codex desktop app and sign in with ChatGPT. The plugin reuses that sign-in." });
+							steps.createEl("li", { text: "From this fork's source folder, run: powershell -ExecutionPolicy Bypass -File services\\codex\\setup.ps1. Keep the folder on the laptop." });
+							steps.createEl("li", { text: "Restart desktop Obsidian. Test the connection below. On iPad, use the laptop's Wi-Fi address and sync or copy the access token." });
+							fragment.createEl("a", { text: "Full Codex service guide", href: "https://github.com/vSebas/handwriting/blob/master/services/codex/README.md" });
+						})); },
 					},
 					{
-						name: "UniMERNet service URL",
-						desc: "On iPad, use the laptop's network address, for example http://192.168.1.20:8765. The laptop must be running the service.",
-						render: setting => setting.addText(text => text.setPlaceholder(DEFAULT_UNIMER_URL).setValue(this.plugin.settings.uniMERUrl).onChange(value => {
-							this.plugin.settings.uniMERUrl = value.trim(); this.plugin.saveSettingsNow();
-						})),
+						name: "Laptop service URL",
+						desc: "On iPad, use the laptop's network address, for example http://192.168.1.20:8765. Keep the laptop and desktop Obsidian running.",
+						render: setting => { setting.addText(text => text.setPlaceholder(DEFAULT_CODEX_URL).setValue(this.plugin.settings.codexServiceUrl).onChange(value => {
+							this.plugin.settings.codexServiceUrl = value.trim(); this.plugin.saveSettingsNow();
+						})); },
 					},
 					{
-						name: "UniMERNet access token",
-						desc: "Desktop Handwriting fills this from the local service. Syncing plugin settings also copies it to your iPad.",
-						render: setting => setting.addText(text => {
+						name: "Laptop service access token",
+						desc: "Desktop Handwriting fills this from the local service. Syncing plugin settings can copy it to your iPad.",
+						render: setting => { setting.addText(text => {
 							text.inputEl.type = "password";
 							text.inputEl.autocomplete = "off";
-							text.setValue(this.plugin.settings.uniMERToken).onChange(value => {
-								this.plugin.settings.uniMERToken = value.trim(); this.plugin.saveSettingsNow();
+							text.setValue(this.plugin.settings.codexServiceToken).onChange(value => {
+								this.plugin.settings.codexServiceToken = value.trim(); this.plugin.saveSettingsNow();
 							});
-						}),
+						}); },
 					},
 					{
-						name: "UniMERNet service folder on laptop",
-						desc: "Folder containing services/unimernet and .tools. Empty uses Documents/handwriting on this laptop. Desktop only.",
-						render: setting => setting.addText(text => text.setPlaceholder("Documents\\handwriting").setValue(this.plugin.settings.uniMERServiceRoot).onChange(value => {
-							this.plugin.settings.uniMERServiceRoot = value.trim(); this.plugin.saveSettingsNow();
-						})),
+						name: "Laptop service folder",
+						desc: "Folder containing services/codex and .tools. Empty uses Documents/handwriting on this laptop. Desktop only.",
+						render: setting => { setting.addText(text => text.setPlaceholder("Documents\\handwriting").setValue(this.plugin.settings.codexServiceRoot).onChange(value => {
+							this.plugin.settings.codexServiceRoot = value.trim(); this.plugin.saveSettingsNow();
+						})); },
 					},
 					{
-						name: "UniMERNet connection",
-						desc: "Check the service and token without sending handwriting.",
-						render: setting => setting.addButton(button => button.setButtonText("Test connection").onClick(async () => {
+						name: "Codex connection",
+						desc: "Check the laptop service and Codex sign-in without sending handwriting.",
+						render: setting => { setting.addButton(button => button.setButtonText("Test connection").onClick(async () => {
 							button.setDisabled(true);
 							try {
-								if (Platform.isDesktopApp) await this.plugin.startLocalUniMERService();
-								await checkUniMERNet({ url: this.plugin.settings.uniMERUrl, token: this.plugin.settings.uniMERToken });
-								setting.setDesc("UniMERNet is ready.");
+								if (Platform.isDesktopApp) await this.plugin.startLocalCodexService();
+								const model = await checkCodexNote({ url: this.plugin.settings.codexServiceUrl, token: this.plugin.settings.codexServiceToken });
+								setting.setDesc(`Codex is ready. Laptop model: ${model}.`);
 							} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Connection failed."); }
 							finally { button.setDisabled(false); }
-						})),
-					},
-					{
-						name: "Handwritten text recognition",
-						desc: "Optional English text-line model on the same laptop service and URL/token, including from iPad. Run services\\unimernet\\setup-text.ps1 once on the laptop and restart desktop Obsidian. Use Lasso: convert handwriting to text or select Text only (local) in the whole-note image dialog. Mixed text and equations use Codex by default.",
-						render: setting => setting.addButton(button => button.setButtonText("Test text connection").onClick(async () => {
-							button.setDisabled(true);
-							try {
-								if (Platform.isDesktopApp) await this.plugin.startLocalUniMERService();
-								await checkHandwrittenText({ url: this.plugin.settings.uniMERUrl, token: this.plugin.settings.uniMERToken });
-								setting.setDesc("Handwritten-text recognition is ready on the laptop.");
-							} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Text connection failed."); }
-							finally { button.setDisabled(false); }
-						})),
-					},
-					{
-						name: "Whole-note Codex recognition",
-						desc: "Uses the Codex CLI signed in on this laptop, including when you select handwriting on iPad. It sends the selected ink image to your configured OpenAI model and returns editable Markdown. No API key is stored in the vault; keep the laptop service reachable.",
-						render: setting => setting.addButton(button => button.setButtonText("Test Codex connection").onClick(async () => {
-							button.setDisabled(true);
-							try {
-								if (Platform.isDesktopApp) await this.plugin.startLocalUniMERService();
-								const model = await checkCodexNote({ url: this.plugin.settings.uniMERUrl, token: this.plugin.settings.uniMERToken });
-								setting.setDesc(`Codex is ready on the laptop. Model: ${model}.`);
-							} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Codex connection failed."); }
-							finally { button.setDisabled(false); }
-						})),
-					},
-					{
-						name: "Offline math recognition",
-						desc: "Only for Hand-to-TeX: download its model data from Hugging Face once (18.5 MB). UniMERNet does not use this download and removes saved Hand-to-TeX models on this device. Use Remove model to clear an iPad manually.",
-						render: (setting) => this.renderMathModelDownload(setting),
+						})); },
 					},
 				],
 			},
@@ -6760,10 +6664,6 @@ export class HandwritingSettingTab extends PluginSettingTab {
 		const on = value === true;
 		const str = typeof value === "string" ? value : "";
 		switch (key) {
-			case "mathProvider":
-				s.mathProvider = str === "unimernet" ? "unimernet" : "hand-to-tex";
-				if (s.mathProvider === "unimernet") void this.plugin.removeHandToTexModelsForUniMERNet();
-				break;
 			case "extendCanvasWhileScrolling":
 				s.extendCanvasWhileScrolling = on;
 				setScrollExpansionEnabled(on);
@@ -6967,46 +6867,6 @@ export class HandwritingSettingTab extends PluginSettingTab {
 				});
 			}
 		}
-	}
-
-	private renderMathModelDownload(setting: Setting): void {
-		setting.addButton(button => button.setButtonText("Download model").onClick(async () => {
-			button.setDisabled(true);
-			try {
-				await this.plugin.getMathModels().download(message => setting.setDesc(message));
-				button.setButtonText("Download again");
-			} catch (error) {
-				setting.setDesc(error instanceof Error ? error.message : "Model download failed. Try again later.");
-			} finally {
-				button.setDisabled(false);
-			}
-		}));
-		setting.addButton(button => button.setButtonText("Remove model from this device").onClick(async () => {
-			button.setDisabled(true);
-			try {
-				const removed = await this.plugin.getMathModels().remove();
-				setting.setDesc(removed > 0
-					? `Removed ${removed} Hand-to-TeX model files from this device.`
-					: "No Hand-to-TeX model files were found on this device.");
-			} catch (error) {
-				setting.setDesc(error instanceof Error ? error.message : "Could not remove Hand-to-TeX model files.");
-			} finally {
-				button.setDisabled(false);
-			}
-		}));
-	}
-
-	private renderUniMERSetup(setting: Setting): void {
-		setting.setDesc(createFragment(fragment => {
-			const steps = fragment.createEl("ol");
-			steps.createEl("li", { text: "On a Windows laptop, download this fork's source and install uv. In PowerShell, open the source folder and run: powershell -ExecutionPolicy Bypass -File services\\unimernet\\setup.ps1. This installs Python and the model once; BRAT installs only the Obsidian plugin." });
-			steps.createEl("li", { text: "Keep that folder. In desktop Obsidian, set the UniMERNet service folder if it is not Documents\\handwriting. The plugin starts the installed service when Obsidian opens or when you press Test connection." });
-			steps.createEl("li", { text: "For iPad, set the service URL to http://<laptop Wi-Fi IP>:8765 and sync or copy the access token from desktop Handwriting settings. Keep the laptop awake with Obsidian open. Press Test connection on each device." });
-			fragment.createEl("a", {
-				text: "Full UniMERNet setup guide",
-				href: "https://github.com/vSebas/handwriting/blob/master/services/unimernet/README.md",
-			});
-		}));
 	}
 
 	/** The settings-only pressure reset keeps its original behavior and notice. */

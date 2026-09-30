@@ -85,7 +85,6 @@ function fakePlugin(raw: unknown): Harness {
 	// Own properties, so they shadow the prototype's DOM-reaching versions.
 	plugin.applyPaperTo = (): void => {};
 	plugin.applyBooxMode = (): void => {};
-	plugin.removeHandToTexModelsForUniMERNet = vi.fn(async () => {});
 	return plugin as unknown as Harness;
 }
 
@@ -100,33 +99,19 @@ async function loadThenSave(raw: unknown): Promise<Harness> {
 describe("settings control consistency preserves saved behavior", () => {
 	it("stores the desktop service token for synced plugin settings", async () => {
 		ensureDocument();
-		const plugin = fakePlugin({ mathProvider: "unimernet", uniMERToken: "" });
+		const plugin = fakePlugin({ codexServiceToken: "" });
 		await proto.loadSettings.call(plugin);
-		(plugin as unknown as Record<string, unknown>).mathService = { start: async () => "generated-token-at-least-24-characters" };
-		await (plugin as unknown as { startLocalUniMERService(): Promise<void> }).startLocalUniMERService();
-		expect(plugin.settings.uniMERToken).toBe("generated-token-at-least-24-characters");
-		expect(plugin.saved?.uniMERToken).toBe("generated-token-at-least-24-characters");
+		(plugin as unknown as Record<string, unknown>).codexService = { start: async () => "generated-token-at-least-24-characters" };
+		await (plugin as unknown as { startLocalCodexService(): Promise<void> }).startLocalCodexService();
+		expect(plugin.settings.codexServiceToken).toBe("generated-token-at-least-24-characters");
+		expect(plugin.saved?.codexServiceToken).toBe("generated-token-at-least-24-characters");
 	});
-	it("persists a provider switch through the real settings control and reload", async () => {
-		const plugin = await loadThenSave({});
-		expect(plugin.settings.mathProvider).toBe("hand-to-tex");
-		const tab = Object.create(HandwritingSettingTab.prototype);
-		tab.plugin = plugin;
-		tab.setControlValue("mathProvider", "unimernet");
-		expect((plugin as unknown as { removeHandToTexModelsForUniMERNet: ReturnType<typeof vi.fn> }).removeHandToTexModelsForUniMERNet).toHaveBeenCalledOnce();
-		await proto.persistSettings.call(plugin);
-		const reloaded = await loadThenSave(plugin.saved);
-		expect(reloaded.settings.mathProvider).toBe("unimernet");
-		tab.setControlValue("mathProvider", "unknown-provider");
-		expect(plugin.settings.mathProvider).toBe("hand-to-tex");
-	});
-	it("normalizes invalid service settings and retains a configured local service", async () => {
-		const invalid = await loadThenSave({ mathProvider: true, uniMERUrl: {}, uniMERToken: 42 });
-		expect(invalid.settings.mathProvider).toBe("hand-to-tex");
-		expect(invalid.settings.uniMERUrl).toBe("http://127.0.0.1:8765");
-		expect(invalid.settings.uniMERToken).toBe("");
-		const configured = await loadThenSave({ mathProvider: "unimernet", uniMERUrl: "http://192.168.1.20:8765", uniMERToken: "test-token" });
-		expect(configured.saved).toMatchObject({ mathProvider: "unimernet", uniMERUrl: "http://192.168.1.20:8765", uniMERToken: "test-token" });
+	it("normalizes Codex service settings", async () => {
+		const configured = await loadThenSave({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexServiceRoot: "C:/service" });
+		expect(configured.saved).toMatchObject({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexServiceRoot: "C:/service" });
+		const invalid = await loadThenSave({ codexServiceUrl: {}, codexServiceToken: 42 });
+		expect(invalid.settings.codexServiceUrl).toBe("http://127.0.0.1:8765");
+		expect(invalid.settings.codexServiceToken).toBe("");
 	});
 	it("presents both color controls as dropdowns and identifies global paper scope", async () => {
 		const plugin = await loadThenSave({});

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { canonicalBuildInputDigest } from "./build-provenance.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const buildInputs = ["src", "esbuild.config.mjs", "scripts/build-provenance.mjs", "scripts/math-worker.mjs", "THIRD_PARTY_NOTICES.md", "package.json", "package-lock.json", "tsconfig.json"];
+const buildInputs = ["src", "esbuild.config.mjs", "scripts/build-provenance.mjs", "THIRD_PARTY_NOTICES.md", "package.json", "package-lock.json", "tsconfig.json"];
 const tempRoots = [];
 const fixtureParent = path.resolve(process.env.HANDWRITING_BUILD_CHECK_DIR || os.tmpdir());
 const checkoutOutput = path.resolve(root, process.env.HANDWRITING_BUILD_OUTFILE || "main.js");

@@ -137,7 +137,7 @@ describe("the gated set: table and registration agree", () => {
 		// palette; fifteen with the toolbar and zoom bar on / off toggle (1.4.20),
 		// a new id, not the retired cycle. The exact count stops either retired
 		// command creeping back in. Handwriting-to-LaTeX adds the sixteenth.
-		expect(ALWAYS_COMMANDS).toHaveLength(16);
+		expect(ALWAYS_COMMANDS).toHaveLength(17);
 	});
 });
 
@@ -204,7 +204,7 @@ describe("the settings row prints the shared table", () => {
 	// closer, and a window that closes before it opens.
 	const OPEN = 'name: "Extra commands for hotkeys"';
 	// Stop at the next group; unrelated provider settings are not part of this row.
-	const CLOSE = 'heading: "Handwriting to LaTeX"';
+	const CLOSE = 'heading: "Handwriting recognition"';
 
 	function row(): string {
 		const from = MAIN.indexOf(OPEN);

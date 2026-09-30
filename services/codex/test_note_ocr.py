@@ -10,7 +10,7 @@ from note_ocr import load_codex_recognizer
 
 class CodexNoteTests(unittest.TestCase):
     @patch("note_ocr.find_codex", return_value=None)
-    def test_unavailable_cli_does_not_disable_other_recognizers(self, _find):
+    def test_unavailable_cli_reports_not_ready(self, _find):
         self.assertEqual(load_codex_recognizer(), (None, None))
 
     @patch("note_ocr.configured_model", return_value="gpt-test")

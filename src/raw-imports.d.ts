@@ -9,7 +9,6 @@ declare module "*?raw" {
 }
 
 declare module "*.wasm" { const bytes: Uint8Array; export default bytes; }
-declare module "handwriting:math-worker" { const source: string; export default source; }
 
 /**
  * `import.meta.glob` with `?raw`: many files' text at once, keyed by

@@ -3,7 +3,6 @@ import process from "process";
 import { readFileSync } from "node:fs";
 import { builtinModules as builtins } from "node:module";
 import { canonicalBuildInputDigest } from "./scripts/build-provenance.mjs";
-import { mathWorkerPlugin } from "./scripts/math-worker.mjs";
 
 const banner = `/*
 Handwriting: pen ink on ordinary Markdown notes in Obsidian.
@@ -23,7 +22,6 @@ const dirtyStatus = "unverified";
 const verified = false;
 
 const ctx = await esbuild.context({
-	plugins: [mathWorkerPlugin()],
 	banner: { js: banner },
 	entryPoints: ["src/main.ts"],
 	define: {

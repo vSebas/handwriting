@@ -3140,6 +3140,13 @@ body.handwriting-boox .handwriting-mobile-tool.is-pressed:not(.is-disabled) {
 	resize: vertical;
 }
 
+.handwriting-selection-preview {
+	display: block;
+	max-width: 100%;
+	max-height: 45vh;
+	object-fit: contain;
+}
+
 .handwriting-image-scroll {
 	max-height: 45vh;
 	overflow: auto;

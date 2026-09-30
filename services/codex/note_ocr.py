@@ -5,7 +5,6 @@ Codex receives that temporary image and returns Markdown; no vault path or
 Markdown body is made available to the model.
 """
 
-import os
 from pathlib import Path
 import re
 import shutil
@@ -44,9 +43,6 @@ def find_codex():
 
 def configured_model():
     """Use the same Codex model configured for this user's CLI, never credentials."""
-    override = os.environ.get("HANDWRITING_CODEX_MODEL", "").strip()
-    if override and re.fullmatch(r"[A-Za-z0-9._-]+", override):
-        return override
     config = Path.home() / ".codex" / "config.toml"
     try:
         value = tomllib.loads(config.read_text(encoding="utf-8")).get("model")
