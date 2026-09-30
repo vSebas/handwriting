@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { checkCodexNote, codexEndpoint, recognizeWholeNoteImages } from "./CodexService";
+import { checkCodexNote, codexEndpoint, listCodexModels, recognizeWholeNoteImages } from "./CodexService";
 
 const network = vi.hoisted(() => vi.fn());
 vi.mock("obsidian", async original => ({ ...await original<object>(), requestUrl: network }));
@@ -22,6 +22,12 @@ describe("Codex handwriting service", () => {
 			.toBe("Text with $x^2$\nnext line");
 		expect(network.mock.calls[0]![0]).toMatchObject({ url: settings.url + "/recognize-note",
 			body: JSON.stringify({ images }), headers: { Authorization: "Bearer local-test-token" } });
+	});
+	it("loads model choices from the same authenticated laptop bridge", async () => {
+		network.mockResolvedValue({ status: 200, json: { defaultModel: "gpt-default", models: [{ id: "gpt-choice", label: "GPT Choice" }] } });
+		expect(await listCodexModels(settings)).toEqual({ defaultModel: "gpt-default", models: [{ id: "gpt-choice", label: "GPT Choice" }] });
+		expect(network.mock.calls[0]![0]).toMatchObject({ method: "GET", url: settings.url + "/models",
+			headers: { Authorization: "Bearer local-test-token" } });
 	});
 	it("sends an explicit model choice with the image", async () => {
 		network.mockResolvedValue({ status: 200, json: { markdown: "Text" } });

@@ -2,7 +2,7 @@ import { requestUrl, App, Command, MarkdownRenderChild, Modal, Notice, Platform,
 import { WholeNoteRecognitionModal } from "./math/WholeNoteRecognitionModal";
 import { CodexSelectionModal } from "./math/CodexSelectionModal";
 import { captureWholeNoteInsertionTarget, noteInkSnapshot } from "./math/WholeNoteInk";
-import { checkCodexNote, recognizeWholeNoteImages, DEFAULT_CODEX_URL } from "./math/CodexService";
+import { checkCodexNote, listCodexModels, recognizeWholeNoteImages, DEFAULT_CODEX_URL } from "./math/CodexService";
 import { LocalCodexService } from "./math/CodexDesktop";
 import {
 	clearGatedCommandAction,
@@ -6531,27 +6531,44 @@ export class HandwritingSettingTab extends PluginSettingTab {
 					{
 						name: "Transcription model",
 						render: setting => {
-							const describe = () => {
-								if (this.plugin.settings.codexModel) return `Handwriting override: ${this.plugin.settings.codexModel}. Used for transcriptions on this device.`;
-								if (Platform.isDesktopApp) {
-									try {
-										const selection = this.plugin.localCodexModelSelection();
-										return `Using ${selection.model} from ${selection.source}. Leave blank to follow the laptop, or enter a model ID to override it.`;
-									} catch { return "Using the laptop's Codex model. Enter a model ID to override it for Handwriting."; }
-								}
-								return "Using the laptop's model. Test the connection to see its name, or enter a model ID to override it on this device.";
+							let defaultModel = Platform.isDesktopApp
+								? this.plugin.localCodexModelSelection().model : "laptop model";
+							let dropdown: import("obsidian").DropdownComponent;
+							const label = () => this.plugin.settings.codexModel
+								? `Using ${this.plugin.settings.codexModel} for transcriptions on this device.`
+								: `Following ${defaultModel}.`;
+							const populate = (models: { id: string; label: string }[]) => {
+								dropdown.selectEl.empty();
+								dropdown.addOption("", `Follow laptop (${defaultModel})`);
+								const selected = this.plugin.settings.codexModel;
+								if (selected && !models.some(model => model.id === selected)) dropdown.addOption(selected, `${selected} (saved choice)`);
+								for (const model of models) dropdown.addOption(model.id, model.label === model.id ? model.id : `${model.label} (${model.id})`);
+								dropdown.setValue(selected);
 							};
-							setting.setDesc(describe());
-							setting.addText(text => text.setPlaceholder("e.g. gpt-6-sol").setValue(this.plugin.settings.codexModel).onChange(value => {
-								const model = value.trim();
-								if (model && !/^[A-Za-z0-9._-]+$/.test(model)) {
-									setting.setDesc("Model IDs may contain letters, numbers, dots, hyphens, and underscores.");
-									return;
+							setting.setDesc("Loading Codex models from the laptop...");
+							setting.addDropdown(component => {
+								dropdown = component;
+								populate([]);
+								component.onChange(value => {
+									this.plugin.settings.codexModel = value;
+									this.plugin.saveSettingsNow();
+									setting.setDesc(label());
+								});
+							});
+							const loadModels = async () => {
+								try {
+									if (Platform.isDesktopApp) await this.plugin.startLocalCodexService();
+									const result = await listCodexModels({ url: this.plugin.settings.codexServiceUrl, token: this.plugin.settings.codexServiceToken });
+									defaultModel = result.defaultModel;
+									populate(result.models);
+									setting.setDesc(`${label()} Model availability is confirmed when you transcribe.`);
+								} catch (error) {
+									populate([]);
+									setting.setDesc(`${label()} Could not load models: ${error instanceof Error ? error.message : "unknown error"}`);
 								}
-								this.plugin.settings.codexModel = model;
-								this.plugin.saveSettingsNow();
-								setting.setDesc(describe());
-							}));
+							};
+							setting.addExtraButton(button => button.setIcon("refresh-cw").setTooltip("Refresh Codex models").onClick(() => { void loadModels(); }));
+							void loadModels();
 						},
 					},
 					{

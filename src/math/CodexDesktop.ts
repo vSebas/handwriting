@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { checkCodexNote } from "./CodexService";
+import { checkCodexNote, type CodexModelOption } from "./CodexService";
 
 const PROMPT = `Transcribe the attached image(s) of handwritten notes into Obsidian Markdown.
 If multiple images are attached, the first is an overview and the rest are
@@ -37,6 +37,7 @@ export class LocalCodexService {
 	private pending: Promise<string> | null = null;
 	private stopped = false;
 	private active = false;
+	private modelPending: Promise<CodexModelOption[]> | null = null;
 	constructor(private settings: () => LocalCodexSettings) {}
 
 	private binary(): string {
@@ -64,6 +65,77 @@ export class LocalCodexService {
 			const timer = setTimeout(() => { task.kill(); reject(new Error("Codex timed out.")); }, timeout);
 			task.once("error", error => { clearTimeout(timer); reject(error); });
 			task.once("close", code => { clearTimeout(timer); resolve(code ?? 1); });
+		});
+	}
+
+	private listModels(binary: string): Promise<CodexModelOption[]> {
+		return this.modelPending ??= this.queryModels(binary).finally(() => { this.modelPending = null; });
+	}
+
+	private queryModels(binary: string): Promise<CodexModelOption[]> {
+		const { child, process } = desktopNode();
+		return new Promise((resolve, reject) => {
+			const task = child.spawn(binary, ["app-server", "--listen", "stdio://"], {
+				windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env },
+			});
+			let finished = false;
+			let buffer = "";
+			let requestId = 1;
+			const models = new Map<string, CodexModelOption>();
+			const cursors = new Set<string>();
+			const finish = (error?: Error) => {
+				if (finished) return;
+				finished = true;
+				clearTimeout(timer);
+				task.kill();
+				if (error) reject(error);
+				else resolve([...models.values()]);
+			};
+			const send = (value: Record<string, unknown>) => task.stdin.write(JSON.stringify(value) + "\n");
+			const page = (cursor?: string) => {
+				requestId++;
+				send({ jsonrpc: "2.0", id: requestId, method: "model/list",
+					params: { includeHidden: false, limit: 100, ...(cursor ? { cursor } : {}) } });
+			};
+			const timer = setTimeout(() => finish(new Error("Codex model discovery timed out.")), 15_000);
+			task.once("error", () => finish(new Error("Could not start Codex model discovery.")));
+			task.once("close", () => finish(new Error("Codex model discovery stopped unexpectedly.")));
+			task.stdout.on("data", (chunk: Buffer) => {
+				buffer += chunk.toString("utf8");
+				if (buffer.length > 2_000_000) return finish(new Error("Codex model list is too large."));
+				let newline: number;
+				while ((newline = buffer.indexOf("\n")) >= 0 && !finished) {
+					const line = buffer.slice(0, newline).trim();
+					buffer = buffer.slice(newline + 1);
+					if (!line) continue;
+					let message: { id?: number; result?: { data?: unknown[]; nextCursor?: unknown }; error?: { message?: string } };
+					try { message = JSON.parse(line); } catch { continue; }
+					if (message.id !== requestId) continue;
+					if (message.error) return finish(new Error(message.error.message || "Codex model discovery failed."));
+					if (requestId === 1) {
+						send({ jsonrpc: "2.0", method: "initialized" });
+						page();
+						continue;
+					}
+					if (!Array.isArray(message.result?.data)) return finish(new Error("Codex returned an invalid model list."));
+					for (const entry of message.result.data) {
+						if (!entry || typeof entry !== "object") continue;
+						const item = entry as { id?: unknown; model?: unknown; displayName?: unknown; hidden?: unknown; inputModalities?: unknown };
+						const id = typeof item.model === "string" ? item.model : item.id;
+						if (typeof id !== "string" || !/^[A-Za-z0-9._-]+$/.test(id) || item.hidden === true) continue;
+						if (Array.isArray(item.inputModalities) && !item.inputModalities.includes("image")) continue;
+						models.set(id, { id, label: typeof item.displayName === "string" && item.displayName.trim() ? item.displayName : id });
+					}
+					const cursor = message.result.nextCursor;
+					if (typeof cursor === "string" && cursor) {
+						if (cursors.has(cursor)) return finish(new Error("Codex repeated a model list page."));
+						cursors.add(cursor);
+						page(cursor);
+					} else finish();
+				}
+			});
+			send({ jsonrpc: "2.0", id: 1, method: "initialize",
+				params: { clientInfo: { name: "handwriting", title: "Handwriting", version: "1.0.0" }, capabilities: {} } });
 		});
 	}
 
@@ -132,6 +204,10 @@ export class LocalCodexService {
 			};
 			if (req.headers.authorization !== `Bearer ${token}`) return reply(401, { error: "Invalid access token." });
 			if (req.method === "GET" && req.url === "/health") return reply(200, { provider: "codex", ready: true, ...this.modelSelection() });
+			if (req.method === "GET" && req.url === "/models") {
+				try { return reply(200, { models: await this.listModels(binary), defaultModel: this.modelSelection().model }); }
+				catch { return reply(503, { error: "Codex model list unavailable. Check the laptop's Codex CLI." }); }
+			}
 			if (req.method !== "POST" || req.url !== "/recognize-note") return reply(404, { error: "Unknown endpoint." });
 			if (this.active) return reply(429, { error: "Recognition already running." });
 			const length = Number(req.headers["content-length"] ?? 0);

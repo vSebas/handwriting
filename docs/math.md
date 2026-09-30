@@ -20,7 +20,7 @@ lasso remains as editable original ink.
 Follow [the Codex CLI setup](../services/codex/README.md) on the laptop.
 On iPad, set the laptop service URL to its Wi-Fi address and sync or copy the
 access token. The laptop must remain reachable. The **Transcription model**
-setting shows the laptop's configured Codex model. Leave its field blank to use
-that model, or enter a model ID to override it for Handwriting. If the laptop
+setting shows the laptop's configured Codex model. Keep **Follow laptop** selected
+to use that model, or choose another image-capable model from the dropdown. If the laptop
 has no configured model, the Codex CLI chooses its own default; it is not
 pinned to Sol. **Test connection** shows the laptop model.

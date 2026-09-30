@@ -6,6 +6,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import process from "node:process";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { LocalCodexService } from "./CodexDesktop";
 
 const network = vi.hoisted(() => vi.fn());
@@ -31,8 +32,21 @@ beforeEach(() => {
 	const child = {
 		spawn: (_binary: string, args: string[]) => {
 			commands.push(args);
-			const task = Object.assign(new EventEmitter(), { kill: vi.fn() });
+			const stdin = new PassThrough();
+			const stdout = new PassThrough();
+			const task = Object.assign(new EventEmitter(), { kill: vi.fn(), stdin, stdout });
+			if (args[0] === "app-server") stdin.on("data", (chunk: Buffer) => {
+				const request = JSON.parse(chunk.toString("utf8"));
+				if (request.id === 1) stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }) + "\n");
+				if (request.method === "model/list") stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {
+					data: [
+						{ model: "gpt-image", displayName: "Image model", inputModalities: ["text", "image"] },
+						{ model: "gpt-text", displayName: "Text model", inputModalities: ["text"] },
+					], nextCursor: null,
+				} }) + "\n");
+			});
 			queueMicrotask(() => {
+				if (args[0] === "app-server") return;
 				if (args[0] === "exec") fs.writeFileSync(args[args.indexOf("--output-last-message") + 1]!, "Text and $x^2$");
 				if (args[0] === "login" && args[1] !== "status") signedIn = true;
 				task.emit("close", args[0] === "login" && args[1] === "status" && !signedIn ? 1 : 0);
@@ -68,6 +82,8 @@ describe("desktop Codex bridge", () => {
 		const headers = { Authorization: `Bearer ${settings.token}` };
 		const health = await fetch(base + "/health", { headers });
 		expect(await health.json()).toMatchObject({ provider: "codex", ready: true, model: "gpt-test" });
+		const models = await fetch(base + "/models", { headers });
+		expect(await models.json()).toEqual({ models: [{ id: "gpt-image", label: "Image model" }], defaultModel: "gpt-test" });
 		const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9YlMP9kAAAAASUVORK5CYII=";
 		const result = await fetch(base + "/recognize-note", { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
 			body: JSON.stringify({ images: ["data:image/png;base64," + png] }) });
