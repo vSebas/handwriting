@@ -1,6 +1,6 @@
 # Handwritten notes to Markdown
 
-## Whole-note workflow in beta.8
+## Whole-note workflow in beta.9
 
 Open a Markdown note and run **Transcribe all handwriting in this note** from
 the command palette. The dialog renders the note's pen ink as one picture,
@@ -18,11 +18,28 @@ and returns editable Obsidian Markdown. Long areas are sent as an overview
 and overlapping detail images in one request. Up to eight detail images are
 allowed; select a smaller area if the note exceeds that limit.
 
-Review the result and add more selections if useful. You can move or remove
-readings and edit the assembled Markdown. **Append to this note** inserts only
-at the current end of the same open editor. It never replaces existing note
-text, pasted image embeds, or original ink. **Copy Markdown** leaves the note
-unchanged.
+If existing Markdown text or a pasted image lies between two handwriting areas,
+the dialog recognizes those areas as separate sections. It places each reading
+after the corresponding Markdown block. This split uses rendered note content,
+not gaps between pen strokes, so words are not divided into separate requests.
+Review each reading and its **After:** insertion point. You can select a
+different block in its dropdown, reorder or remove readings, and edit their
+Markdown.
+
+**Insert transcription** offers **Beside matching note sections** (default),
+**At cursor when command opened**, and **At end of note**. For the latter two,
+you can also edit the combined Markdown box after recognition. The cursor is
+captured before the dialog opens; if the note changes during recognition,
+positional insertion refuses and lets you copy the result instead. End-of-note
+insertion uses the current end of the same note.
+
+Each reading has an optional **Replace this section's pen ink** switch. It is
+off by default. After the Markdown is inserted, the plugin removes only the
+complete pen strokes in that reviewed selection as one undoable ink action.
+Partial strokes, highlighter marks, other sections, existing note text, and
+pasted image embeds remain. Review drawings in a selection before enabling
+replacement, since a selected pen drawing is also pen ink. **Copy Markdown**
+leaves the note unchanged.
 
 The dropdown also offers **Text only (local)** with optional TrOCR and
 **Equation only (local)** with UniMERNet. They are useful for focused crops but

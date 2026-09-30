@@ -21,6 +21,9 @@ model to transcribe mixed prose and equations as editable Markdown. The local
 text and math models remain optional for focused selections. Existing Markdown
 text, pasted image links, and original ink remain in place. On iPad, the laptop
 service must be reachable. See [the workflow and limits](docs/handwriting-ocr-plan.md).
+Version `1.4.22-beta.9` adds section-aware insertion beside existing text and
+images, insertion at the captured cursor, and optional replacement of reviewed
+pen ink.
 
 ## removing the plugin
 

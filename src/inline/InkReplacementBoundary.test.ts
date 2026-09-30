@@ -125,6 +125,20 @@ it.each([false, true])("replace with pieces=%s publishes one complete snapshot a
 	expect(r.overlay.repaintPath).toHaveBeenLastCalledWith(r.path);
 });
 
+it("removes only reviewed unchanged pen ink and restores it with editor undo", async () => {
+	const recognized = stroke("recognized"), unrelated = stroke("unrelated", 40);
+	const r = await rig([recognized, unrelated]);
+	r.overlay.selection.clear = vi.fn();
+	const expected = [{ id: recognized.id, signature: JSON.stringify(recognized) }];
+	expect(r.overlay.removeTranscribedInk(r.path, expected)).toBe(1);
+	expect(ids(r.strokes())).toEqual(["unrelated"]);
+	expect(r.published.at(-1)?.type).toBe("remove");
+	expect(r.run(undo)).toBe(true);
+	expect(ids(r.strokes())).toEqual(["recognized", "unrelated"]);
+	recognized.points[0]!.x = 3;
+	expect(() => r.overlay.removeTranscribedInk(r.path, expected)).toThrow("changed");
+});
+
 it.each(["empty-to-ink", "ink-to-empty", "same-id", "missing-removed"])("%s replacement publishes the final contents", async kind => {
 	const original = stroke("original");
 	const r = await rig(kind === "empty-to-ink" || kind === "missing-removed" ? [] : [original]);

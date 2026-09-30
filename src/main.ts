@@ -2,7 +2,7 @@ import { requestUrl, App, Command, MarkdownRenderChild, Modal, Notice, Platform,
 import { MathRecognitionModal } from "./math/MathRecognitionModal";
 import { TextRecognitionModal } from "./math/TextRecognitionModal";
 import { WholeNoteRecognitionModal } from "./math/WholeNoteRecognitionModal";
-import { captureWholeNoteTarget, noteInkSnapshot } from "./math/WholeNoteInk";
+import { captureWholeNoteInsertionTarget, noteInkSnapshot } from "./math/WholeNoteInk";
 import { mathInk, type MathInk } from "./math/MathRecognition";
 import { captureMathTarget } from "./math/MathInsertionTarget";
 import { captureTextTarget } from "./math/TextInsertionTarget";
@@ -3135,8 +3135,13 @@ export default class HandwritingPlugin extends Plugin {
 						await inlineInk.ensureLoaded(file.path);
 						if (!inlineInk.isLoaded(file.path)) throw new Error("The note's saved ink is still loading or damaged. Try again after it is available.");
 						if (this.app.workspace.activeEditor !== active || active.file !== file) throw new Error("Return to the original note and try again.");
-						const snapshot = noteInkSnapshot(inlineInk.strokes(file.path));
-						const append = captureWholeNoteTarget(active, () => this.app.workspace.activeEditor);
+						const editor = active.editor;
+						if (!editor) throw new Error("Open a Markdown editor to transcribe this note.");
+						const overlay = overlayForActiveEditor(editor, file);
+						if (!overlay) throw new Error("Open the note in a handwriting-enabled editor before transcribing it.");
+						const anchors = overlay.transcriptionAnchors(file.path, editor.getValue());
+						const snapshot = noteInkSnapshot(inlineInk.strokes(file.path), anchors);
+						const insert = captureWholeNoteInsertionTarget(active, () => this.app.workspace.activeEditor);
 						this.wholeNoteModal?.close();
 						this.wholeNoteModal = new WholeNoteRecognitionModal(this.app, snapshot,
 							async (images, kind, signal, progress) => {
@@ -3151,7 +3156,11 @@ export default class HandwritingPlugin extends Plugin {
 										? recognizeHandwrittenTextImage(settings, images[0]!, signal, progress)
 										: recognizeMathImage(settings, images[0]!, signal, progress);
 							},
-							append);
+							result => {
+								if (result.remove.length) overlay.validateTranscribedInk(file.path, result.remove);
+								insert(result.blocks, result.placement, result.combined);
+								if (result.remove.length) overlay.removeTranscribedInk(file.path, result.remove);
+							});
 						this.wholeNoteModal.open();
 					} catch (error) {
 						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read note ink."}`);

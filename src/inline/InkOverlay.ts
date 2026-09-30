@@ -5,6 +5,7 @@ import { isolateHistory, redo, redoDepth, undo, undoDepth } from "@codemirror/co
 import { Notice, Platform, editorInfoField } from "obsidian";
 import type { Editor, TFile } from "obsidian";
 import { runGatedCommand } from "../CommandPaletteSplit";
+import { markdownBlockAnchors, type NotePlacementAnchor, type NoteStrokeSnapshot } from "../math/WholeNoteInk";
 import { Camera } from "../camera/Camera";
 import { CameraState } from "../camera/coordinates";
 import { contentOrigin, contentOriginLeft } from "./ContentOrigin";
@@ -10455,6 +10456,40 @@ export class InkOverlayPlugin {
 		this.scheduleRepaint();
 		this.repaintPath(path);
 		return strokes.length;
+	}
+
+	/** Locate safe Markdown insertion points in the same world frame as pen ink. */
+	transcriptionAnchors(path: string, markdown: string): NotePlacementAnchor[] {
+		if (this.filePath() !== path || this.view.state.doc.toString() !== markdown || !(this.scale > 0)) {
+			throw new Error("The note layout changed. Reopen the transcription dialog.");
+		}
+		return markdownBlockAnchors(markdown).map((anchor, index) => ({
+			offset: anchor.offset,
+			y: index === 0 && anchor.offset === 0 ? 0 : this.view.lineBlockAt(Math.min(anchor.lineStart, this.view.state.doc.length)).bottom / this.scale,
+			label: anchor.label,
+		}));
+	}
+
+	/** Refuse to erase ink that has changed since its OCR image was captured. */
+	validateTranscribedInk(path: string, expected: readonly Pick<NoteStrokeSnapshot, "id" | "signature">[]): void {
+		if (this.filePath() !== path || !inlineInk.isLoaded(path)) throw new Error("Return to the original loaded note before replacing handwriting.");
+		const current = new Map(inlineInk.strokes(path).map(stroke => [stroke.id, stroke]));
+		if (expected.some(item => !current.has(item.id) || JSON.stringify(current.get(item.id)) !== item.signature)) {
+			throw new Error("Some handwriting changed since recognition. Reopen the dialog before replacing it.");
+		}
+	}
+
+	/** Remove only the reviewed pen strokes, as one undoable ink operation. */
+	removeTranscribedInk(path: string, expected: readonly Pick<NoteStrokeSnapshot, "id" | "signature">[]): number {
+		this.validateTranscribedInk(path, expected);
+		if (!expected.length) return 0;
+		const removed = inlineInk.applyRemove(path, expected.map(item => item.id));
+		if (removed.length !== expected.length) throw new Error("Some handwriting could not be removed. Undo the text insertion and retry.");
+		this.dispatchInk({ type: "remove", path, strokes: removed.map(item => item.stroke), indices: removed.map(item => item.index) });
+		this.selection.clear();
+		this.scheduleRepaint();
+		this.repaintPath(path);
+		return removed.length;
 	}
 
 	/**

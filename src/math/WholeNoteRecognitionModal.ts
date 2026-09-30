@@ -1,10 +1,10 @@
 import { App, Modal, Notice, Platform, Setting } from "obsidian";
-import { noteInkImage, noteInkTiles, type InkImageBounds } from "./MathInkImage";
-import { imageSelectionBounds } from "./WholeNoteInk";
-import type { MathInk } from "./MathRecognition";
+import { noteInkImage, noteInkTiles } from "./MathInkImage";
+import { imageSelectionBounds, noteInkSections, type NoteInkSource, type NotePlacement, type NoteStrokeSnapshot } from "./WholeNoteInk";
 
 type Kind = "codex" | "text" | "math";
-interface ReviewBlock { kind: Kind; value: string; card: HTMLElement; field: HTMLTextAreaElement }
+interface ReviewBlock { kind: Kind; value: string; card: HTMLElement; field: HTMLTextAreaElement; offset: number; strokes: NoteStrokeSnapshot[]; replaceInk: boolean }
+export interface NoteCommit { blocks: Array<{ markdown: string; offset: number }>; placement: NotePlacement; combined: string; remove: NoteStrokeSnapshot[] }
 export type NoteImageRecognizer = (images: string[], kind: Kind, signal: AbortSignal,
 	progress: (message: string) => void) => Promise<string>;
 
@@ -20,20 +20,21 @@ export class WholeNoteRecognitionModal extends Modal {
 	private selectedTo: [number, number] = [1, 1];
 	private dragStart: [number, number] | null = null;
 	private kind: Kind = "codex";
+	private placement: NotePlacement = "sections";
 	private selecting = false;
 	private abort = new AbortController();
 	private pending = false;
 	private closed = false;
 
-	constructor(app: App, private source: { ink: MathInk; bounds: InkImageBounds },
-		private recognize: NoteImageRecognizer, private append: (markdown: string) => void) { super(app); }
+	constructor(app: App, private source: NoteInkSource,
+		private recognize: NoteImageRecognizer, private commit: (result: NoteCommit) => void) { super(app); }
 
 	onOpen(): void {
 		this.abort = new AbortController();
 		this.closed = false;
 		this.setTitle("Transcribe note handwriting");
 		this.contentEl.addClass("handwriting-math-modal", "handwriting-whole-note-modal");
-		this.contentEl.createEl("p", { text: "Select the whole handwriting image or draw an area. Codex reads mixed text and equations together; the local text and math models remain available for focused selections. Your existing note text, pasted images, and ink stay in place." });
+		this.contentEl.createEl("p", { text: "Select the whole ink image or draw an area. Recognition separates handwriting only where rendered note text or images divide it. Review each section before inserting." });
 		this.status = this.contentEl.createEl("p", { attr: { role: "status", "aria-live": "polite" } });
 		const scroll = this.contentEl.createDiv({ cls: "handwriting-image-scroll" });
 		const selector = scroll.createDiv({ cls: "handwriting-image-selector" });
@@ -102,16 +103,22 @@ export class WholeNoteRecognitionModal extends Modal {
 				button.setDisabled(true);
 				try {
 					const bounds = imageSelectionBounds(this.source.bounds, this.selectedFrom, this.selectedTo);
-					const preview = noteInkImage(this.source.ink, bounds);
-					const images = this.kind === "codex" ? noteInkTiles(this.source.ink, bounds) : [preview];
-					this.status.setText("Recognizing selected handwriting…");
+					const sections = noteInkSections(this.source, bounds);
+					if (sections.length > 12) throw new Error("This selection crosses more than twelve handwriting sections. Select a smaller part of the note.");
 					const kind = this.kind;
-					const value = await this.recognize(images, kind, this.abort.signal, message => {
-						if (!this.closed) this.status.setText(message);
-					});
-					if (this.closed) return;
-					this.addBlock(kind, value, preview);
-					this.status.setText("Review this reading. Select another area, or edit the Markdown below.");
+					for (const [index, section] of sections.entries()) {
+						this.status.setText(`Recognizing section ${index + 1} of ${sections.length}…`);
+						const preview = noteInkImage(section.ink, section.bounds);
+						const images = kind === "codex" ? noteInkTiles(section.ink, section.bounds) : [preview];
+						const value = await this.recognize(images, kind, this.abort.signal, message => {
+							if (!this.closed) this.status.setText(`Section ${index + 1}: ${message}`);
+						});
+						if (this.closed) return;
+						const complete = section.strokes.filter(stroke => stroke.bounds.left >= bounds.left && stroke.bounds.right <= bounds.right &&
+							stroke.bounds.top >= bounds.top && stroke.bounds.bottom <= bounds.bottom);
+						this.addBlock(kind, value, preview, section.anchor.offset, complete);
+					}
+					this.status.setText("Review each reading and its insertion section. Select another area if needed.");
 				} catch (error) {
 					if (!this.closed) this.status.setText(error instanceof Error ? error.message : "Recognition failed.");
 				} finally {
@@ -119,19 +126,36 @@ export class WholeNoteRecognitionModal extends Modal {
 					if (!this.closed) button.setDisabled(false);
 				}
 			}));
-		this.contentEl.createEl("p", { text: "Recognized selections (editable). Codex can read a mixed area in one request; use smaller areas if any symbols are unclear. Drawings remain as ink." });
+		this.contentEl.createEl("p", { text: "Recognized sections (editable). Adjust each section's insertion point if needed. Only complete selected pen strokes can be replaced; other ink stays." });
 		this.list = this.contentEl.createDiv({ cls: "handwriting-image-results" });
-		this.contentEl.createEl("p", { text: "Markdown to append (editable)" });
-		this.output = this.contentEl.createEl("textarea", { attr: { "aria-label": "Markdown transcription to append", rows: "10" } });
+		new Setting(this.contentEl).setName("Insert transcription")
+			.addDropdown(dropdown => dropdown.addOption("sections", "Beside matching note sections")
+				.addOption("cursor", "At cursor when command opened")
+				.addOption("end", "At end of note")
+				.onChange(value => {
+					this.placement = value === "cursor" ? "cursor" : value === "end" ? "end" : "sections";
+					this.output.readOnly = this.placement === "sections";
+					if (this.output.readOnly) this.updateOutput();
+				}));
+		this.contentEl.createEl("p", { text: "Combined Markdown. Edit each section above for matched placement; cursor and end placement also allow editing this combined copy." });
+		this.output = this.contentEl.createEl("textarea", { attr: { "aria-label": "Combined Markdown transcription", rows: "10" } });
+		this.output.readOnly = true;
 		new Setting(this.contentEl)
-			.addButton(button => button.setButtonText("Append to this note").setCta().onClick(() => {
+			.addButton(button => button.setButtonText("Insert into this note").setCta().onClick(() => {
 				if (this.pending) return;
 				try {
-					if (!this.output.value.trim()) throw new Error("Recognize a selection or enter Markdown first.");
-					this.append(this.output.value);
+					const blocks = this.blocks.flatMap(block => {
+						const markdown = this.blockMarkdown(block);
+						return markdown ? [{ markdown, offset: block.offset }] : [];
+					});
+					if (!this.output.value.trim() || !blocks.length) throw new Error("Recognize and review at least one section first.");
+					const remove = [...new Map(this.blocks.flatMap(block => block.replaceInk && this.blockMarkdown(block)
+						? block.strokes.map(stroke => [stroke.id, stroke] as const) : [])).values()];
+					if (this.blocks.some(block => block.replaceInk) && !remove.length) throw new Error("No complete pen strokes are selected for replacement. Select a larger area.");
+					this.commit({ blocks, placement: this.placement, combined: this.output.value, remove });
 					this.close();
-					new Notice("Handwriting: transcription appended; original note content and ink kept.");
-				} catch (error) { this.status.setText(error instanceof Error ? error.message : "Could not append transcription."); }
+					new Notice(remove.length ? "Handwriting: transcription inserted; selected pen ink removed." : "Handwriting: transcription inserted; original ink kept.");
+				} catch (error) { this.status.setText(error instanceof Error ? error.message : "Could not insert transcription."); }
 			}))
 			.addButton(button => button.setButtonText("Copy Markdown").onClick(async () => {
 				if (this.pending) return;
@@ -151,15 +175,19 @@ export class WholeNoteRecognitionModal extends Modal {
 		this.selectionEl.style.height = `${Math.abs(y2 - y1) * 100}%`;
 	}
 
-	private addBlock(kind: Kind, value: string, image: string): void {
+	private addBlock(kind: Kind, value: string, image: string, offset: number, strokes: NoteStrokeSnapshot[]): void {
 		const card = this.list.createDiv({ cls: "handwriting-image-result" });
 		card.createEl("img", { attr: { src: image, alt: "Recognized handwriting selection" } });
 		const field = card.createEl("textarea", { attr: { "aria-label": kind === "math" ? "Recognized LaTeX" : kind === "codex" ? "Recognized Markdown" : "Recognized text", rows: "3" } });
 		field.value = value;
-		const block: ReviewBlock = { kind, value, card, field };
+		const block: ReviewBlock = { kind, value, card, field, offset, strokes, replaceInk: false };
 		this.blocks.push(block);
 		field.addEventListener("input", () => { block.value = field.value; this.updateOutput(); });
 		new Setting(card).setName(kind === "math" ? "Equation" : kind === "codex" ? "Mixed Markdown" : "Text")
+			.addDropdown(dropdown => {
+				for (const anchor of this.source.anchors) dropdown.addOption(String(anchor.offset), anchor.label);
+				dropdown.setValue(String(offset)).onChange(value => { block.offset = Number(value); });
+			})
 			.addButton(button => button.setButtonText("Move up").onClick(() => {
 				const index = this.blocks.indexOf(block);
 				if (index < 1) return;
@@ -171,14 +199,20 @@ export class WholeNoteRecognitionModal extends Modal {
 				this.blocks.splice(this.blocks.indexOf(block), 1);
 				card.remove(); this.updateOutput();
 			}));
+		new Setting(card).setName(`Replace this section's pen ink (${strokes.length} strokes)`)
+			.setDesc("Only after insertion succeeds. Other ink, text, and images stay in the note.")
+			.addToggle(toggle => toggle.setValue(false).setDisabled(strokes.length === 0)
+				.onChange(value => { block.replaceInk = value; }));
 		this.updateOutput();
 	}
 
 	private updateOutput(): void {
-		this.output.value = this.blocks.flatMap(block => {
-			const value = block.value.trim();
-			return value ? [block.kind === "math" ? `$$\n${value}\n$$` : value] : [];
-		}).join("\n\n");
+		this.output.value = this.blocks.map(block => this.blockMarkdown(block)).filter(Boolean).join("\n\n");
+	}
+
+	private blockMarkdown(block: ReviewBlock): string {
+		const value = block.value.trim();
+		return value ? block.kind === "math" ? `$$\n${value}\n$$` : value : "";
 	}
 
 	onClose(): void {
