@@ -24,6 +24,8 @@ service must be reachable. See [the workflow and limits](docs/handwriting-ocr-pl
 Version `1.4.22-beta.9` adds section-aware insertion beside existing text and
 images, insertion at the captured cursor, and optional replacement of reviewed
 pen ink.
+Version `1.4.22-beta.10` automatically uses the matching section and disables
+manual placement controls when a reviewed section's ink is set to be replaced.
 
 ## removing the plugin
 

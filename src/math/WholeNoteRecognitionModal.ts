@@ -3,7 +3,11 @@ import { noteInkImage, noteInkTiles } from "./MathInkImage";
 import { imageSelectionBounds, noteInkSections, type NoteInkSource, type NotePlacement, type NoteStrokeSnapshot } from "./WholeNoteInk";
 
 type Kind = "codex" | "text" | "math";
-interface ReviewBlock { kind: Kind; value: string; card: HTMLElement; field: HTMLTextAreaElement; offset: number; strokes: NoteStrokeSnapshot[]; replaceInk: boolean }
+interface ReviewBlock {
+	kind: Kind; value: string; card: HTMLElement; field: HTMLTextAreaElement;
+	offset: number; suggestedOffset: number; placementSelect: HTMLSelectElement | null;
+	strokes: NoteStrokeSnapshot[]; replaceInk: boolean;
+}
 export interface NoteCommit { blocks: Array<{ markdown: string; offset: number }>; placement: NotePlacement; combined: string; remove: NoteStrokeSnapshot[] }
 export type NoteImageRecognizer = (images: string[], kind: Kind, signal: AbortSignal,
 	progress: (message: string) => void) => Promise<string>;
@@ -16,6 +20,7 @@ export class WholeNoteRecognitionModal extends Modal {
 	private list!: HTMLElement;
 	private selectionEl!: HTMLElement;
 	private preview!: HTMLImageElement;
+	private placementSelect!: HTMLSelectElement;
 	private selectedFrom: [number, number] = [0, 0];
 	private selectedTo: [number, number] = [1, 1];
 	private dragStart: [number, number] | null = null;
@@ -126,17 +131,20 @@ export class WholeNoteRecognitionModal extends Modal {
 					if (!this.closed) button.setDisabled(false);
 				}
 			}));
-		this.contentEl.createEl("p", { text: "Recognized sections (editable). Adjust each section's insertion point if needed. Only complete selected pen strokes can be replaced; other ink stays." });
+		this.contentEl.createEl("p", { text: "Recognized sections (editable). Adjust a section's insertion point while keeping its ink. Replacing its ink uses the suggested matching section automatically." });
 		this.list = this.contentEl.createDiv({ cls: "handwriting-image-results" });
 		new Setting(this.contentEl).setName("Insert transcription")
-			.addDropdown(dropdown => dropdown.addOption("sections", "Beside matching note sections")
+			.addDropdown(dropdown => {
+				dropdown.addOption("sections", "Beside matching note sections")
 				.addOption("cursor", "At cursor when command opened")
 				.addOption("end", "At end of note")
 				.onChange(value => {
 					this.placement = value === "cursor" ? "cursor" : value === "end" ? "end" : "sections";
 					this.output.readOnly = this.placement === "sections";
 					if (this.output.readOnly) this.updateOutput();
-				}));
+				});
+				this.placementSelect = dropdown.selectEl;
+			});
 		this.contentEl.createEl("p", { text: "Combined Markdown. Edit each section above for matched placement; cursor and end placement also allow editing this combined copy." });
 		this.output = this.contentEl.createEl("textarea", { attr: { "aria-label": "Combined Markdown transcription", rows: "10" } });
 		this.output.readOnly = true;
@@ -152,6 +160,7 @@ export class WholeNoteRecognitionModal extends Modal {
 					const remove = [...new Map(this.blocks.flatMap(block => block.replaceInk && this.blockMarkdown(block)
 						? block.strokes.map(stroke => [stroke.id, stroke] as const) : [])).values()];
 					if (this.blocks.some(block => block.replaceInk) && !remove.length) throw new Error("No complete pen strokes are selected for replacement. Select a larger area.");
+					if (remove.length && this.placement !== "sections") throw new Error("Replacing ink inserts beside its original section.");
 					this.commit({ blocks, placement: this.placement, combined: this.output.value, remove });
 					this.close();
 					new Notice(remove.length ? "Handwriting: transcription inserted; selected pen ink removed." : "Handwriting: transcription inserted; original ink kept.");
@@ -180,13 +189,15 @@ export class WholeNoteRecognitionModal extends Modal {
 		card.createEl("img", { attr: { src: image, alt: "Recognized handwriting selection" } });
 		const field = card.createEl("textarea", { attr: { "aria-label": kind === "math" ? "Recognized LaTeX" : kind === "codex" ? "Recognized Markdown" : "Recognized text", rows: "3" } });
 		field.value = value;
-		const block: ReviewBlock = { kind, value, card, field, offset, strokes, replaceInk: false };
+		const block: ReviewBlock = { kind, value, card, field, offset, suggestedOffset: offset,
+			placementSelect: null, strokes, replaceInk: false };
 		this.blocks.push(block);
 		field.addEventListener("input", () => { block.value = field.value; this.updateOutput(); });
 		new Setting(card).setName(kind === "math" ? "Equation" : kind === "codex" ? "Mixed Markdown" : "Text")
 			.addDropdown(dropdown => {
 				for (const anchor of this.source.anchors) dropdown.addOption(String(anchor.offset), anchor.label);
 				dropdown.setValue(String(offset)).onChange(value => { block.offset = Number(value); });
+				block.placementSelect = dropdown.selectEl;
 			})
 			.addButton(button => button.setButtonText("Move up").onClick(() => {
 				const index = this.blocks.indexOf(block);
@@ -197,13 +208,32 @@ export class WholeNoteRecognitionModal extends Modal {
 			}))
 			.addButton(button => button.setButtonText("Remove").onClick(() => {
 				this.blocks.splice(this.blocks.indexOf(block), 1);
-				card.remove(); this.updateOutput();
+				card.remove(); this.updateOutput(); this.syncReplacementPlacement();
 			}));
 		new Setting(card).setName(`Replace this section's pen ink (${strokes.length} strokes)`)
-			.setDesc("Only after insertion succeeds. Other ink, text, and images stay in the note.")
+			.setDesc("Uses the suggested section location automatically. Other ink, text, and images stay in the note.")
 			.addToggle(toggle => toggle.setValue(false).setDisabled(strokes.length === 0)
-				.onChange(value => { block.replaceInk = value; }));
+				.onChange(value => {
+					block.replaceInk = value;
+					if (value) {
+						block.offset = block.suggestedOffset;
+						if (block.placementSelect) block.placementSelect.value = String(block.suggestedOffset);
+					}
+					if (block.placementSelect) block.placementSelect.disabled = value;
+					this.syncReplacementPlacement();
+				}));
 		this.updateOutput();
+	}
+
+	private syncReplacementPlacement(): void {
+		const replacing = this.blocks.some(block => block.replaceInk);
+		if (replacing) {
+			this.placement = "sections";
+			this.placementSelect.value = "sections";
+			this.output.readOnly = true;
+			this.updateOutput();
+		}
+		this.placementSelect.disabled = replacing;
 	}
 
 	private updateOutput(): void {

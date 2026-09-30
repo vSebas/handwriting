@@ -36,6 +36,10 @@ insertion uses the current end of the same note.
 Each reading has an optional **Replace this section's pen ink** switch. It is
 off by default. After the Markdown is inserted, the plugin removes only the
 complete pen strokes in that reviewed selection as one undoable ink action.
+When replacement is on, the reading's insertion-point dropdown is disabled
+and the suggested matching section is used automatically. The overall
+insertion mode is locked to matching sections until all replacement switches
+are off.
 Partial strokes, highlighter marks, other sections, existing note text, and
 pasted image embeds remain. Review drawings in a selection before enabling
 replacement, since a selected pen drawing is also pen ink. **Copy Markdown**
