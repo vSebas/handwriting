@@ -2084,6 +2084,10 @@ export default class HandwritingPlugin extends Plugin {
 			prepareExternalAdoption: (pageId, outgoing) =>
 				this.store.prepareExternalAdoption(pageId, outgoing),
 			acceptExternalAdoption: (prepared) => this.store.acceptExternalAdoption(prepared),
+			// Reopening a note revalidates its warm record against the disk, so
+			// a sidecar replaced by git/sync while the note was closed is
+			// adopted instead of being overwritten by the session's stale copy.
+			sidecarExternallyChanged: (pageId) => this.store.externallyChanged(pageId),
 			notify: (message) => blockNotice(message),
 		});
 
@@ -3823,6 +3827,10 @@ export default class HandwritingPlugin extends Plugin {
 			if (document.visibilityState === "hidden") this.flushOnHide();
 		});
 		this.registerDomEvent(window, "pagehide", () => this.flushOnHide());
+		// Desktop stays visible while the user alt-tabs to a terminal and
+		// commits the vault - exactly the moment a mid-debounce sidecar write
+		// must not still be pending. flushDispatch is a no-op when idle.
+		this.registerDomEvent(window, "blur", () => this.flushOnHide());
 
 		// ---- foreground repaint (1.4.12 §14) ----------------------------------
 		// The mirror of the flush above, on the way BACK. WebKit reclaims a
