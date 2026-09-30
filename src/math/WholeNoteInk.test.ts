@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { InkStroke } from "../ink/Stroke";
 import type { MathEditor } from "./MathInsertionTarget";
-import { appendTranscription, captureWholeNoteTarget, noteInkRegions } from "./WholeNoteInk";
+import { appendTranscription, captureWholeNoteTarget, imageSelectionBounds, noteInkSnapshot } from "./WholeNoteInk";
 
 function stroke(id: string, x: number, y: number, tool: "pen" | "highlighter" = "pen"): InkStroke {
 	return { id, tool, color: "black", width: 2, createdAt: Number(id.replace(/\D/g, "")) || 1,
@@ -11,18 +11,21 @@ function stroke(id: string, x: number, y: number, tool: "pen" | "highlighter" = 
 }
 
 describe("whole-note ink transcription", () => {
-	it("groups nearby pen strokes into top-to-bottom bands and snapshots them", () => {
-		const strokes = [stroke("s3", 0, 90), stroke("s2", 30, 0), stroke("s1", 0, 0), stroke("h", 0, 50, "highlighter")];
-		const regions = noteInkRegions(strokes);
-		expect(regions.map(region => region.strokes)).toEqual([2, 1]);
-		expect(regions.map(region => region.y)).toEqual([0, 90]);
-		strokes[2]!.points[0]!.x = 900;
-		expect(regions[0]!.ink.traces[0]![0]![0]).toBe(0);
+	it("keeps every pen stroke in one image and maps visual selection to note coordinates", () => {
+		const strokes = [stroke("s1", 0, 0), stroke("s2", 30, 0), stroke("s3", 0, 90), stroke("h", 0, 45, "highlighter")];
+		const snapshot = noteInkSnapshot(strokes);
+		expect(snapshot.ink.traces).toHaveLength(3);
+		const crop = imageSelectionBounds(snapshot.bounds, [.1, .2], [.9, .8]);
+		expect(crop.left).toBeLessThan(crop.right);
+		expect(crop.top).toBeLessThan(crop.bottom);
+		expect(imageSelectionBounds(snapshot.bounds, [1, 1], [0, 0])).toEqual(snapshot.bounds);
+		strokes[0]!.points[0]!.x = 999;
+		expect(snapshot.ink.traces[0]![0]![0]).toBe(0);
 	});
 	it("accepts long rasterizable lines beyond the lasso model's point limit", () => {
 		const long = stroke("s1", 0, 0);
 		long.points = Array.from({ length: 2_500 }, (_, i) => ({ x: i / 10, y: i % 12, t: i, pressure: .5 }));
-		expect(noteInkRegions([long])[0]!.ink.traces[0]).toHaveLength(2_500);
+		expect(noteInkSnapshot([long]).ink.traces[0]).toHaveLength(2_500);
 	});
 	it("never changes existing Markdown, pasted images, or their paths", () => {
 		const original = "# Notes\n\nExisting paragraph.\n\n![[Pasted image 2026.png]]\n";

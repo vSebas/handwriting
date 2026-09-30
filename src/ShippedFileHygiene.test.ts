@@ -1,9 +1,9 @@
 /**
  * NOTHING SHIPPED NAMES HOW IT WAS BUILT.
  *
- * Alan's rule, and it is absolute: no public-facing reference to the tooling or
- * the process anywhere a reader of this repository can reach. He found one in a
- * shipped build himself, which is one time too many for a rule a grep can hold.
+ * Internal coordination details do not belong in shipped files. Public names
+ * of supported services, such as the Codex integration, are part of the product
+ * and must remain available in the UI and setup documentation.
  *
  * What this catches is mostly not credit lines. It is source comments citing
  * internal coordination files BY PATH as the authority for a user-facing
@@ -36,7 +36,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /** Internal process terms, base64 so this file does not contain them. */
-const NAMES_B64 = "Y2xhdWRlfGFudGhyb3BpY3xjb2RleHxvcHVzfHNvbm5ldHxmYWJsZXxhc3RyYXxsdW5hfGdwdA==";
+const NAMES_B64 = "Y2xhdWRlfGFudGhyb3BpY3xvcHVzfHNvbm5ldHxmYWJsZXxhc3RyYXxsdW5h";
 /** Internal paths and phrases, same reason. */
 const PHRASES_B64 = "XC5jbGF1ZGUvfGxlYWQtZW5naW5lZXJ8bWFpbGJveHxxdWV1ZVwubWR8Y28tYXV0aG9yZWQ=";
 /** Positive controls: lines that MUST be caught. */

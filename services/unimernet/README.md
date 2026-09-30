@@ -80,8 +80,29 @@ does not interpret arrows or diagrams; the original ink is kept.
 
 The model card describes single text-line images as its intended input. The
 service divides clearly separated horizontal lines before recognition, but
-crowded layouts may need separate lasso selections. See the
-[whole-note plan](../../docs/handwriting-ocr-plan.md) for mixed content.
+crowded layouts may need separate lasso selections. Use the whole-note Codex
+mode below for mixed content.
+
+## Whole-note images with Codex
+
+The **Transcribe all handwriting in this note** command sends the note's pen
+ink as a picture to this same token-protected service. The default **Mixed
+handwriting (Codex)** mode passes the picture to the Codex CLI already signed
+in on the laptop. It reads prose, equations, and their visual arrangement in
+one request and returns editable Obsidian Markdown. The service uses the
+model in the laptop's `~/.codex/config.toml`; set
+`HANDWRITING_CODEX_MODEL` in the service environment to override it. It does
+not read or copy Codex credentials into the vault. On iPad, use the laptop URL
+and token as above, and press **Test Codex connection** in Handwriting settings.
+
+The plugin looks for `codex` on the laptop's PATH or in the current user's
+standalone Codex installation. Sign in with `codex login` on the laptop if
+necessary, then restart desktop Obsidian to restart the service. Each request
+uses a temporary PNG, a read-only sandbox, and an ephemeral Codex session;
+the temporary files are removed afterward. The selected image is sent to
+OpenAI through the signed-in Codex CLI. Review all generated Markdown before
+appending it. Existing Markdown text, pasted image embeds, and original ink
+are untouched. See [the image-selection workflow](../../docs/handwriting-ocr-plan.md).
 
 ## Developer checks
 

@@ -1,4 +1,4 @@
-"""Local UniMERNet bridge. No third-party network calls after model setup."""
+"""Local recognition bridge. Codex note requests send selected ink to OpenAI."""
 import argparse
 import base64
 import binascii
@@ -12,6 +12,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MAX_BODY = 4 * 1024 * 1024
+MAX_NOTE_BODY = 12 * 1024 * 1024
 
 
 def decode_image(body):
@@ -32,6 +33,17 @@ def decode_image(body):
         return Image.alpha_composite(background, rgba).convert("RGB")
     except (binascii.Error, OSError) as error:
         raise ValueError("Invalid PNG image.") from error
+
+
+def decode_note_images(body):
+    value = json.loads(body)
+    images = value.get("images") if isinstance(value, dict) else None
+    if not isinstance(images, list) or not 1 <= len(images) <= 9:
+        raise ValueError("Expected one to nine handwriting images.")
+    decoded = [decode_image(json.dumps({"image": data})) for data in images]
+    if sum(image.width * image.height for image in decoded) > 16_000_000:
+        raise ValueError("Handwriting images exceed the supported size.")
+    return decoded
 
 
 def load_recognizer(model_dir, device="cpu"):
@@ -81,7 +93,7 @@ def load_recognizer(model_dir, device="cpu"):
     return recognize
 
 
-def make_server(host, port, token, recognize, recognize_text=None):
+def make_server(host, port, token, recognize, recognize_text=None, recognize_note=None, note_model=None):
     busy = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -117,22 +129,29 @@ def make_server(host, port, token, recognize, recognize_text=None):
             if self.path != "/health":
                 self.reply(404, {"error": "Unknown endpoint."})
                 return
-            self.reply(200, {"provider": "unimernet", "ready": True, "text_ready": recognize_text is not None})
+            self.reply(200, {"provider": "unimernet", "ready": True,
+                             "text_ready": recognize_text is not None,
+                             "note_ready": recognize_note is not None,
+                             "note_model": note_model if recognize_note is not None else None})
 
         def do_POST(self):
             if not self.authorized():
                 return
-            if self.path not in ("/recognize", "/recognize-text"):
+            if self.path not in ("/recognize", "/recognize-text", "/recognize-note"):
                 self.reply(404, {"error": "Unknown endpoint."})
                 return
             if self.path == "/recognize-text" and recognize_text is None:
                 self.reply(503, {"error": "Install the optional handwritten-text model first."})
                 return
+            if self.path == "/recognize-note" and recognize_note is None:
+                self.reply(503, {"error": "Sign in to Codex on the laptop and restart the service."})
+                return
             try:
                 size = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 size = 0
-            if not 0 < size <= MAX_BODY:
+            limit = MAX_NOTE_BODY if self.path == "/recognize-note" else MAX_BODY
+            if not 0 < size <= limit:
                 self.reply(413, {"error": "Invalid request size."})
                 return
             if not busy.acquire(blocking=False):
@@ -140,12 +159,15 @@ def make_server(host, port, token, recognize, recognize_text=None):
                 return
             try:
                 try:
-                    image = decode_image(self.rfile.read(size))
+                    body = self.rfile.read(size)
+                    image = decode_note_images(body) if self.path == "/recognize-note" else decode_image(body)
                 except (ValueError, TypeError):
                     self.reply(400, {"error": "Invalid image request."})
                     return
                 if self.path == "/recognize-text":
                     self.reply(200, {"text": recognize_text(image)})
+                elif self.path == "/recognize-note":
+                    self.reply(200, {"markdown": recognize_note(image)})
                 else:
                     self.reply(200, {"latex": recognize(image)})
             except Exception as error:
@@ -177,6 +199,8 @@ def main():
     if args.text_model_dir and (Path(args.text_model_dir) / "model.safetensors").is_file():
         from text_ocr import load_text_recognizer
         recognize_text = load_text_recognizer(args.text_model_dir)
+    from note_ocr import load_codex_recognizer
+    recognize_note, note_model = load_codex_recognizer()
     if args.image:
         from PIL import Image, ImageOps
         import time
@@ -193,7 +217,7 @@ def main():
     token = token_path.read_text(encoding="utf-8").strip()
     if len(token) < 24:
         raise ValueError("Token must contain at least 24 characters.")
-    server = make_server(args.host, args.port, token, recognize, recognize_text)
+    server = make_server(args.host, args.port, token, recognize, recognize_text, recognize_note, note_model)
     print(f"Ready on {args.host}:{args.port}. Access token file: {token_path.resolve()}", flush=True)
     print("Keep this window open. Ctrl+C stops the service.", flush=True)
     try:

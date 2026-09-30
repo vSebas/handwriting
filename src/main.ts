@@ -2,12 +2,12 @@ import { requestUrl, App, Command, MarkdownRenderChild, Modal, Notice, Platform,
 import { MathRecognitionModal } from "./math/MathRecognitionModal";
 import { TextRecognitionModal } from "./math/TextRecognitionModal";
 import { WholeNoteRecognitionModal } from "./math/WholeNoteRecognitionModal";
-import { captureWholeNoteTarget, noteInkRegions } from "./math/WholeNoteInk";
+import { captureWholeNoteTarget, noteInkSnapshot } from "./math/WholeNoteInk";
 import { mathInk, type MathInk } from "./math/MathRecognition";
 import { captureMathTarget } from "./math/MathInsertionTarget";
 import { captureTextTarget } from "./math/TextInsertionTarget";
 import { handToTex } from "./math/HandToTex";
-import { uniMERNet, checkUniMERNet, checkHandwrittenText, recognizeHandwrittenText, DEFAULT_UNIMER_URL } from "./math/UniMERNet";
+import { uniMERNet, checkUniMERNet, checkHandwrittenText, checkCodexNote, recognizeHandwrittenText, recognizeHandwrittenTextImage, recognizeMathImage, recognizeWholeNoteImages, DEFAULT_UNIMER_URL } from "./math/UniMERNet";
 import { LocalUniMERService } from "./math/UniMERDesktop";
 import type { MathRecognizer } from "./math/MathRecognizer";
 import { MathModels } from "./math/MathModels";
@@ -3135,13 +3135,22 @@ export default class HandwritingPlugin extends Plugin {
 						await inlineInk.ensureLoaded(file.path);
 						if (!inlineInk.isLoaded(file.path)) throw new Error("The note's saved ink is still loading or damaged. Try again after it is available.");
 						if (this.app.workspace.activeEditor !== active || active.file !== file) throw new Error("Return to the original note and try again.");
-						const regions = noteInkRegions(inlineInk.strokes(file.path));
+						const snapshot = noteInkSnapshot(inlineInk.strokes(file.path));
 						const append = captureWholeNoteTarget(active, () => this.app.workspace.activeEditor);
 						this.wholeNoteModal?.close();
-						this.wholeNoteModal = new WholeNoteRecognitionModal(this.app, regions,
-							async (region, kind, signal, progress) => kind === "text"
-								? this.recognizeSelectedText(region.ink, signal, progress)
-								: (await this.mathRecognizer().recognize(region.ink, signal, progress)).latex,
+						this.wholeNoteModal = new WholeNoteRecognitionModal(this.app, snapshot,
+							async (images, kind, signal, progress) => {
+								if (Platform.isDesktopApp) {
+									progress("Starting the recognition service on this laptop...");
+									await this.startLocalUniMERService();
+								}
+								const settings = { url: this.settings.uniMERUrl, token: this.settings.uniMERToken };
+								return kind === "codex"
+									? recognizeWholeNoteImages(settings, images, signal, progress)
+									: kind === "text"
+										? recognizeHandwrittenTextImage(settings, images[0]!, signal, progress)
+										: recognizeMathImage(settings, images[0]!, signal, progress);
+							},
 							append);
 						this.wholeNoteModal.open();
 					} catch (error) {
@@ -6605,7 +6614,7 @@ export class HandwritingSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Handwritten text recognition",
-						desc: "Optional English text-line model on the same laptop service and URL/token, including from iPad. Run services\\unimernet\\setup-text.ps1 once on the laptop and restart desktop Obsidian. Then use Lasso: convert handwriting to text, or Transcribe all handwriting in this note for region-by-region text and math review.",
+						desc: "Optional English text-line model on the same laptop service and URL/token, including from iPad. Run services\\unimernet\\setup-text.ps1 once on the laptop and restart desktop Obsidian. Use Lasso: convert handwriting to text or select Text only (local) in the whole-note image dialog. Mixed text and equations use Codex by default.",
 						render: setting => setting.addButton(button => button.setButtonText("Test text connection").onClick(async () => {
 							button.setDisabled(true);
 							try {
@@ -6613,6 +6622,19 @@ export class HandwritingSettingTab extends PluginSettingTab {
 								await checkHandwrittenText({ url: this.plugin.settings.uniMERUrl, token: this.plugin.settings.uniMERToken });
 								setting.setDesc("Handwritten-text recognition is ready on the laptop.");
 							} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Text connection failed."); }
+							finally { button.setDisabled(false); }
+						})),
+					},
+					{
+						name: "Whole-note Codex recognition",
+						desc: "Uses the Codex CLI signed in on this laptop, including when you select handwriting on iPad. It sends the selected ink image to your configured OpenAI model and returns editable Markdown. No API key is stored in the vault; keep the laptop service reachable.",
+						render: setting => setting.addButton(button => button.setButtonText("Test Codex connection").onClick(async () => {
+							button.setDisabled(true);
+							try {
+								if (Platform.isDesktopApp) await this.plugin.startLocalUniMERService();
+								const model = await checkCodexNote({ url: this.plugin.settings.uniMERUrl, token: this.plugin.settings.uniMERToken });
+								setting.setDesc(`Codex is ready on the laptop. Model: ${model}.`);
+							} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Codex connection failed."); }
 							finally { button.setDisabled(false); }
 						})),
 					},

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkUniMERNet, checkHandwrittenText, recognizeHandwrittenText, uniMEREndpoint, uniMERNet } from "./UniMERNet";
+import { checkUniMERNet, checkHandwrittenText, checkCodexNote, recognizeHandwrittenText, recognizeWholeNoteImages, uniMEREndpoint, uniMERNet } from "./UniMERNet";
 
 const network = vi.hoisted(() => vi.fn());
 const render = vi.hoisted(() => vi.fn(() => "data:image/png;base64,test"));
@@ -45,6 +45,17 @@ describe("UniMERNet service provider", () => {
 			headers: { Authorization: "Bearer local-test-token" } });
 		network.mockResolvedValue({ status: 503, json: {} });
 		await expect(recognizeHandwrittenText(settings, ink, new AbortController().signal, () => {})).rejects.toThrow("optional handwritten-text model");
+	});
+	it("sends a complete ink image to the signed-in Codex provider as one request", async () => {
+		network.mockResolvedValue({ status: 200, json: { note_ready: true, note_model: "gpt-test" } });
+		expect(await checkCodexNote(settings)).toBe("gpt-test");
+		network.mockResolvedValue({ status: 200, json: { markdown: "Text with $x^2$\r\nnext line" } });
+		const images = ["data:image/png;base64,whole-note"];
+		expect(await recognizeWholeNoteImages(settings, images, new AbortController().signal, () => {}))
+			.toBe("Text with $x^2$\nnext line");
+		expect(network.mock.calls[1]![0]).toMatchObject({ url: settings.url + "/recognize-note",
+			body: JSON.stringify({ images }), headers: { Authorization: "Bearer local-test-token" } });
+		expect(render).not.toHaveBeenCalled();
 	});
 	it.each([[401, "access token"], [429, "another expression"], [500, "HTTP 500"]])("handles HTTP %s without retrying", async (status, message) => {
 		network.mockResolvedValue({ status, json: {} });

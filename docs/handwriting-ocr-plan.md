@@ -1,57 +1,47 @@
-# Handwritten notes to Markdown: implementation plan
+# Handwritten notes to Markdown
 
-The first working increment is a separate **Lasso: convert handwriting to text**
-command. It uses the same selected pen paths, authenticated laptop service,
-editable review, safe insertion, and copy workflow as math recognition. An
-optional, pinned TrOCR model reads English text lines on the laptop; UniMERNet
-remains the math recognizer. The iPad sends only the selected ink image through
-the existing service URL. The plugin retains the original ink.
+## Whole-note workflow in beta.8
 
-TrOCR was chosen for this narrow task because its published intended use is OCR
-on single handwritten text lines. It is not an all-purpose notes parser. The
-separate model loads only on the first text request and is installed only after
-the user explicitly runs `services/unimernet/setup-text.ps1`. Math-only users
-need not download it.
+Open a Markdown note and run **Transcribe all handwriting in this note** from
+the command palette. The dialog renders the note's pen ink as one picture,
+without splitting strokes into guessed words or lines. The whole picture is
+selected initially. To use only part of it, drag a rectangle on desktop; on
+iPad, tap **Select area** and draw the rectangle with a finger or Pencil.
+You can scroll a long image when selection mode is off.
 
-## Whole-note review in beta.7
+Choose **Mixed handwriting (Codex)** and press **Recognize selection**. The
+iPad sends only the selected ink image through the existing token-protected
+laptop service. The service invokes the laptop's signed-in Codex CLI in a
+temporary folder, with a read-only sandbox and an ephemeral session. It uses
+the model named in the laptop's Codex configuration (or its default model),
+and returns editable Obsidian Markdown. Long areas are sent as an overview
+and overlapping detail images in one request. Up to eight detail images are
+allowed; select a smaller area if the note exceeds that limit.
 
-The command palette action **Transcribe all handwriting in this note** reads
-the active Markdown note's saved pen ink, groups it into horizontal regions,
-and shows the original crop for each region. Every region can be marked Text,
-Math / LaTeX, or Drawing / keep as ink. Text uses the optional TrOCR service;
-math uses the configured math provider. The user corrects each result and
-edits the assembled Markdown before appending it to the same note. It appends
-at the current end of the active editor, so existing text, image embeds, and
-ink remain untouched. No region is silently omitted: a region must have a
-reading or be explicitly marked keep as ink.
+Review the result and add more selections if useful. You can move or remove
+readings and edit the assembled Markdown. **Append to this note** inserts only
+at the current end of the same open editor. It never replaces existing note
+text, pasted image embeds, or original ink. **Copy Markdown** leaves the note
+unchanged.
 
-The grouping is geometric, not a trained page-layout model. Dense equations,
-columns, arrows, and diagrams can be grouped imperfectly; the region type and
-output must be reviewed. The command limits the note to 1,200 pen strokes,
-120,000 ink points, 100 regions, and 25,000 points per region. Larger passages
-can still be handled with lasso commands. On iPad, the configured laptop
-service must be reachable over the network.
+The dropdown also offers **Text only (local)** with optional TrOCR and
+**Equation only (local)** with UniMERNet. They are useful for focused crops but
+do not understand a mixed page. TrOCR's published intended input is a single
+handwritten text line, so its multi-line support is a best-effort fallback.
 
-## Further work
+## Setup and limits
 
-1. Add region split/merge and reorder controls for columns, dense math, and
-   unusual layouts. The current reading order is top-to-bottom.
-2. Recognize clear arrows and connectors, but keep ambiguous relationships as
-   ink until the user labels them. Do not infer logical meaning from a shape.
-3. Compare model output on representative handwritten notes before suggesting
-   text versus math automatically. Keep per-region manual override.
+Install and start the [laptop service](../services/unimernet/README.md), sign
+in to Codex on that laptop, and restart desktop Obsidian. In Handwriting
+settings, press **Test Codex connection** on the laptop and iPad. The iPad
+uses the same service URL and access token as UniMERNet; it does not need
+Codex installed. A Codex model request sends the selected ink image to OpenAI
+under the laptop's existing Codex sign-in. No API key or Codex credential is
+copied into the vault. The local TrOCR and UniMERNet modes remain available
+without a Codex model request.
 
-## Model decision and acceptance
-
-Before adding automatic region-type suggestions, compare the specialized
-TrOCR + UniMERNet pipeline with a unified document model such as
-[PaddleOCR-VL](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6)
-on representative notes from the user's actual handwriting. Published document
-benchmarks do not establish performance on pen-drawn notes. Measure text errors,
-equation correctness, reading order, arrow false positives, CPU time and memory.
-Prefer the smaller pipeline unless a unified model materially improves those
-tests on this CPU-only laptop. The review UI must still allow corrections.
-
-The first release should be considered text-line OCR, not complete diagram
-understanding. A mixed page is done when the review output preserves the
-arrangement and lets a person correct every uncertain block.
+The plugin limits a note snapshot to 1,200 pen strokes and 120,000 points.
+The service accepts at most nine images and 16 million decoded pixels per
+request. Very large notes may need multiple selections. Handwriting and math
+recognition can still make mistakes, especially on crowded diagrams or
+ambiguous symbols; review the Markdown before appending.

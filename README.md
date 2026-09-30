@@ -14,14 +14,13 @@ and select the corresponding published release. Version `1.4.22-beta.3` adds
 the optional UniMERNet provider. Version `1.4.22-beta.4` adds automatic service
 startup on the laptop. Version `1.4.22-beta.5` adds setup guidance in Handwriting
 settings. Version `1.4.22-beta.6` adds optional English handwritten-text
-recognition through the same laptop service. Version `1.4.22-beta.7` adds
-**Transcribe all handwriting in this note** in the command palette. It groups
-the note's pen ink into regions for review: choose Text, Math / LaTeX, or
-Drawing / keep as ink for each, recognize, correct the result, and append the
-edited Markdown to the note. Existing Markdown text, pasted image links, and
-original ink remain in place. The optional text model and reachable laptop
-service are required for text recognition on iPad. See
-[the handwriting OCR plan](docs/handwriting-ocr-plan.md) for limitations.
+recognition through the same laptop service. Version `1.4.22-beta.8` changes
+**Transcribe all handwriting in this note** to show a single ink image. Select
+the whole image or draw an area, then use the laptop's signed-in Codex vision
+model to transcribe mixed prose and equations as editable Markdown. The local
+text and math models remain optional for focused selections. Existing Markdown
+text, pasted image links, and original ink remain in place. On iPad, the laptop
+service must be reachable. See [the workflow and limits](docs/handwriting-ocr-plan.md).
 
 ## removing the plugin
 

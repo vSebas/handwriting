@@ -3140,17 +3140,37 @@ body.handwriting-boox .handwriting-mobile-tool.is-pressed:not(.is-disabled) {
 	resize: vertical;
 }
 
-.handwriting-whole-note-list {
+.handwriting-image-scroll {
 	max-height: 45vh;
-	overflow-y: auto;
+	overflow: auto;
 	border: 1px solid var(--background-modifier-border);
 	padding: var(--size-4-2);
 }
-.handwriting-whole-note-region {
+.handwriting-image-selector {
+	position: relative;
+	display: inline-block;
+	line-height: 0;
+}
+.handwriting-image-selector.is-selecting { touch-action: none; }
+.handwriting-image-selector img {
+	display: block;
+	max-width: 100%;
+	user-select: none;
+	-webkit-user-drag: none;
+	background: white;
+}
+.handwriting-image-selection {
+	position: absolute;
+	box-sizing: border-box;
+	border: 2px solid var(--interactive-accent);
+	background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+	pointer-events: none;
+}
+.handwriting-image-result {
 	border-bottom: 1px solid var(--background-modifier-border);
 	padding: var(--size-4-2) 0;
 }
-.handwriting-whole-note-region img {
+.handwriting-image-result img {
 	display: block;
 	max-width: 100%;
 	max-height: 120px;

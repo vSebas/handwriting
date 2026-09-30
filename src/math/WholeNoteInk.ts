@@ -1,55 +1,33 @@
 import type { InkStroke } from "../ink/Stroke";
 import type { MathInk, TracePoint } from "./MathRecognition";
 import type { MathEditor } from "./MathInsertionTarget";
+import { inkImageBounds, type InkImageBounds } from "./MathInkImage";
 
-export interface NoteInkRegion { ink: MathInk; strokes: number; x: number; y: number }
-
-/** Group pen paths into horizontal bands. The user reviews every band before any note edit. */
-export function noteInkRegions(strokes: readonly InkStroke[]): NoteInkRegion[] {
-	const pens = strokes.filter(s => s.tool === "pen" && s.points.length);
+/** A single immutable image source: no stroke-based word or line segmentation. */
+export function noteInkSnapshot(strokes: readonly InkStroke[]): { ink: MathInk; bounds: InkImageBounds } {
+	const pens = strokes.filter(stroke => stroke.tool === "pen" && stroke.points.length);
 	if (!pens.length) throw new Error("This note has no pen handwriting to convert.");
-	if (pens.length > 1200) throw new Error("This note has more than 1,200 pen strokes. Convert smaller selections with the lasso.");
-	if (pens.reduce((n, stroke) => n + stroke.points.length, 0) > 120_000) {
-		throw new Error("This note has more than 120,000 ink points. Convert smaller selections with the lasso.");
+	if (pens.length > 1200 || pens.reduce((n, stroke) => n + stroke.points.length, 0) > 120_000) {
+		throw new Error("This note has too much pen ink for one image. Use a smaller lasso selection.");
 	}
-	const bounds = pens.map(stroke => {
-		let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
-		for (const point of stroke.points) {
-			if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error("The note contains invalid ink coordinates.");
-			left = Math.min(left, point.x); right = Math.max(right, point.x);
-			top = Math.min(top, point.y); bottom = Math.max(bottom, point.y);
-		}
-		return { stroke, left, right, top, bottom, center: (top + bottom) / 2, height: bottom - top };
-	});
-	const heights = bounds.map(b => b.height).filter(h => h > 1).sort((a, b) => a - b);
-	const typical = heights[Math.floor(heights.length / 2)] ?? 18;
-	const tolerance = Math.max(10, Math.min(60, typical * .8));
-	const bands: { center: number; members: typeof bounds }[] = [];
-	for (const bound of bounds.sort((a, b) => a.center - b.center || a.left - b.left)) {
-		let nearest: typeof bands[number] | undefined;
-		let distance = Infinity;
-		for (const band of bands) {
-			const d = Math.abs(band.center - bound.center);
-			if (d < distance && d <= tolerance) { nearest = band; distance = d; }
-		}
-		if (nearest) {
-			nearest.members.push(bound);
-			nearest.center = nearest.members.reduce((sum, member) => sum + member.center, 0) / nearest.members.length;
-		} else bands.push({ center: bound.center, members: [bound] });
-	}
-	if (bands.length > 100) throw new Error("This note has more than 100 handwriting regions. Convert smaller selections with the lasso.");
-	return bands.map(band => {
-		const members = band.members.sort((a, b) => a.left - b.left);
-		return { ink: regionInk(members.map(m => m.stroke)), strokes: members.length,
-			x: Math.min(...members.map(m => m.left)), y: Math.min(...members.map(m => m.top)) };
-	}).sort((a, b) => a.y - b.y || a.x - b.x);
+	const ink = snapshotInk([...pens]);
+	const raw = inkImageBounds(ink);
+	const pad = Math.max(12, Math.min(40, (raw.right - raw.left) * .02));
+	return { ink, bounds: { left: raw.left - pad, top: raw.top - pad,
+		right: raw.right + pad, bottom: raw.bottom + pad } };
 }
 
-/** Whole-note crops are rasterized locally, so they need no small on-device encoder limit. */
-function regionInk(strokes: InkStroke[]): MathInk {
-	if (strokes.length > 300 || strokes.reduce((n, stroke) => n + stroke.points.length, 0) > 25_000) {
-		throw new Error("One handwriting region is too dense to recognize. Convert that part with the lasso.");
-	}
+/** Map a rectangle dragged over the preview back to original note coordinates. */
+export function imageSelectionBounds(full: InkImageBounds, from: [number, number], to: [number, number]): InkImageBounds {
+	const clamp = (n: number) => Math.max(0, Math.min(1, n));
+	const x1 = clamp(Math.min(from[0], to[0])), x2 = clamp(Math.max(from[0], to[0]));
+	const y1 = clamp(Math.min(from[1], to[1])), y2 = clamp(Math.max(from[1], to[1]));
+	return { left: full.left + x1 * (full.right - full.left), right: full.left + x2 * (full.right - full.left),
+		top: full.top + y1 * (full.bottom - full.top), bottom: full.top + y2 * (full.bottom - full.top) };
+}
+
+/** Copy note paths before any asynchronous model request. */
+function snapshotInk(strokes: InkStroke[]): MathInk {
 	let firstTime = Infinity;
 	const traces = strokes.sort((a, b) => a.createdAt - b.createdAt).map(stroke => {
 		const start = stroke.createdAt - stroke.points[stroke.points.length - 1]!.t;
