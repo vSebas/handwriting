@@ -23,4 +23,10 @@ describe("Codex handwriting service", () => {
 		expect(network.mock.calls[0]![0]).toMatchObject({ url: settings.url + "/recognize-note",
 			body: JSON.stringify({ images }), headers: { Authorization: "Bearer local-test-token" } });
 	});
+	it("sends an explicit model choice with the image", async () => {
+		network.mockResolvedValue({ status: 200, json: { markdown: "Text" } });
+		const images = ["data:image/png;base64,whole-note"];
+		await recognizeWholeNoteImages({ ...settings, model: "gpt-choice" }, images, new AbortController().signal, () => {});
+		expect(network.mock.calls[0]![0].body).toBe(JSON.stringify({ images, model: "gpt-choice" }));
+	});
 });

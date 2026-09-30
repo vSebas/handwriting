@@ -29,7 +29,7 @@ function desktopNode() {
 	};
 }
 
-export interface LocalCodexSettings { url: string; token: string }
+export interface LocalCodexSettings { url: string; token: string; model: string }
 
 export class LocalCodexService {
 	private server: import("node:http").Server | null = null;
@@ -67,15 +67,23 @@ export class LocalCodexService {
 		});
 	}
 
-	private model(): string {
+	modelSelection(requestedModel = ""): { model: string; source: string } {
+		const override = requestedModel.trim() || this.settings().model.trim();
+		if (override) {
+			if (!/^[A-Za-z0-9._-]+$/.test(override)) throw new Error("Use a Codex model ID containing only letters, numbers, dots, hyphens, or underscores.");
+			return { model: override, source: "Handwriting override" };
+		}
 		const { fs, path, os } = desktopNode();
 		try {
 			const config = fs.readFileSync(path.join(os.homedir(), ".codex", "config.toml"), "utf8");
-			return /^model\s*=\s*["']([A-Za-z0-9._-]+)["']/m.exec(config)?.[1] ?? "Codex default";
-		} catch { return "Codex default"; }
+			const topLevel = config.split(/^\s*\[[^\]]+\]\s*$/m, 1)[0] ?? "";
+			const model = /^model\s*=\s*["']([A-Za-z0-9._-]+)["']/m.exec(topLevel)?.[1];
+			if (model) return { model, source: "laptop Codex config" };
+		} catch { /* Codex can still choose its built-in default. */ }
+		return { model: "Codex CLI default (not pinned)", source: "Codex CLI" };
 	}
 
-	private async recognize(binary: string, images: string[]): Promise<string> {
+	private async recognize(binary: string, images: string[], requestedModel = ""): Promise<string> {
 		const { fs, os, path } = desktopNode();
 		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "handwriting-codex-"));
 		try {
@@ -87,8 +95,8 @@ export class LocalCodexService {
 				await fs.promises.writeFile(file, Buffer.from(image.slice(PNG_PREFIX.length), "base64"));
 				args.push("--image", file);
 			}
-			const model = this.model();
-			if (model !== "Codex default") args.push("--model", model);
+			const { model } = this.modelSelection(requestedModel);
+			if (model !== "Codex CLI default (not pinned)") args.push("--model", model);
 			args.push("--", PROMPT);
 			if (await this.run(binary, args, 240_000, dir) !== 0) throw new Error("Codex failed.");
 			const markdown = (await fs.promises.readFile(output, "utf8")).trim();
@@ -123,7 +131,7 @@ export class LocalCodexService {
 				res.end(JSON.stringify(value));
 			};
 			if (req.headers.authorization !== `Bearer ${token}`) return reply(401, { error: "Invalid access token." });
-			if (req.method === "GET" && req.url === "/health") return reply(200, { provider: "codex", ready: true, model: this.model() });
+			if (req.method === "GET" && req.url === "/health") return reply(200, { provider: "codex", ready: true, ...this.modelSelection() });
 			if (req.method !== "POST" || req.url !== "/recognize-note") return reply(404, { error: "Unknown endpoint." });
 			if (this.active) return reply(429, { error: "Recognition already running." });
 			const length = Number(req.headers["content-length"] ?? 0);
@@ -139,6 +147,11 @@ export class LocalCodexService {
 				}
 				const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 				const images = (body as { images?: unknown })?.images;
+				const requestedModel = (body as { model?: unknown })?.model;
+				if (requestedModel !== undefined && (typeof requestedModel !== "string" ||
+					(requestedModel && !/^[A-Za-z0-9._-]+$/.test(requestedModel)))) {
+					return reply(400, { error: "Invalid Codex model ID." });
+				}
 				if (!Array.isArray(images) || images.length < 1 || images.length > 9 ||
 					images.some(image => typeof image !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(image))) {
 					return reply(400, { error: "Expected one to nine PNG images." });
@@ -150,7 +163,7 @@ export class LocalCodexService {
 						return reply(400, { error: "Invalid or oversized PNG image." });
 					}
 				}
-			reply(200, { markdown: await this.recognize(binary, images as string[]) });
+				reply(200, { markdown: await this.recognize(binary, images as string[], requestedModel as string | undefined) });
 			} catch { reply(500, { error: "Codex recognition failed. Check sign-in and model access." }); }
 			finally { this.active = false; }
 		});

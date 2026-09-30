@@ -15,7 +15,7 @@ let folder: string;
 let service: LocalCodexService | null;
 let commands: string[][];
 let port: number;
-let settings: { url: string; token: string };
+let settings: { url: string; token: string; model: string };
 
 beforeEach(() => {
 	folder = fs.mkdtempSync(path.join(os.tmpdir(), "handwriting-bridge-test-"));
@@ -25,7 +25,7 @@ beforeEach(() => {
 	commands = [];
 	let signedIn = false;
 	port = 19000 + Math.floor(Math.random() * 10000);
-	settings = { url: `http://127.0.0.1:${port}`, token: "integration-token-at-least-24-characters" };
+	settings = { url: `http://127.0.0.1:${port}`, token: "integration-token-at-least-24-characters", model: "" };
 	service = null;
 	const fakeProcess = { platform: "win32", env: { PATH: folder } };
 	const child = {
@@ -75,5 +75,19 @@ describe("desktop Codex bridge", () => {
 		expect(await result.json()).toEqual({ markdown: "Text and $x^2$" });
 		expect(commands.some(args => args[0] === "exec" && args.includes("--image") && args.at(-2) === "--" &&
 			args.at(-1)?.startsWith("Transcribe the attached image(s)"))).toBe(true);
+		expect(commands.find(args => args[0] === "exec")?.slice(-4, -2)).toEqual(["--model", "gpt-test"]);
+		const override = await fetch(base + "/recognize-note", { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+			body: JSON.stringify({ images: ["data:image/png;base64," + png], model: "gpt-choice" }) });
+		expect(override.status).toBe(200);
+		expect(commands.filter(args => args[0] === "exec").at(-1)?.slice(-4, -2)).toEqual(["--model", "gpt-choice"]);
+		settings.model = "gpt-local-choice";
+		const localChoice = await fetch(base + "/recognize-note", { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+			body: JSON.stringify({ images: ["data:image/png;base64," + png] }) });
+		expect(localChoice.status).toBe(200);
+		expect(commands.filter(args => args[0] === "exec").at(-1)?.slice(-4, -2)).toEqual(["--model", "gpt-local-choice"]);
+		settings.model = "";
+		fs.rmSync(path.join(folder, ".codex", "config.toml"));
+		const unpinned = await fetch(base + "/health", { headers });
+		expect(await unpinned.json()).toMatchObject({ model: "Codex CLI default (not pinned)" });
 	});
 });

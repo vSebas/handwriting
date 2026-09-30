@@ -357,6 +357,7 @@ const PDF_INK_CHANGED_DURING_BACKUP =
 interface HandwritingSettings {
 	codexServiceUrl: string;
 	codexServiceToken: string;
+	codexModel: string;
 	/** Named locations use their own schema; opaque records survive older builds. */
 	savedViews: unknown[];
 	/**
@@ -504,6 +505,7 @@ interface HandwritingSettings {
 const DEFAULT_SETTINGS: HandwritingSettings = {
 	codexServiceUrl: DEFAULT_CODEX_URL,
 	codexServiceToken: "",
+	codexModel: "",
 	cameras: {},
 	savedViews: [],
 	inkSizes: { pen: 1, highlighter: 1 },
@@ -1172,8 +1174,11 @@ export default class HandwritingPlugin extends Plugin {
 	private codexService: LocalCodexService | null = null;
 	private getLocalCodexService(): LocalCodexService {
 		return this.codexService ??= new LocalCodexService(() => ({
-			url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken,
+			url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken, model: this.settings.codexModel,
 		}));
+	}
+	localCodexModelSelection(): { model: string; source: string } {
+		return this.getLocalCodexService().modelSelection();
 	}
 	async signInToCodex(): Promise<void> {
 		if (!Platform.isDesktopApp) throw new Error("Sign in on the laptop running desktop Obsidian.");
@@ -3051,7 +3056,8 @@ export default class HandwritingPlugin extends Plugin {
 									progress("Starting the Codex service on this laptop...");
 									await this.startLocalCodexService();
 								}
-								return recognizeWholeNoteImages({ url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken }, images, signal, progress);
+								return recognizeWholeNoteImages({ url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken,
+									model: this.settings.codexModel }, images, signal, progress);
 							}, insert && overlay && file ? (markdown, replaceInk) => {
 								if (replaceInk) overlay.validateTranscribedInk(file.path, source.strokes);
 								insert([{ markdown, offset: 0 }], "cursor", markdown);
@@ -3091,7 +3097,7 @@ export default class HandwritingPlugin extends Plugin {
 									progress("Starting the recognition service on this laptop...");
 									await this.startLocalCodexService();
 								}
-								const settings = { url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken };
+								const settings = { url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken, model: this.settings.codexModel };
 								return recognizeWholeNoteImages(settings, images, signal, progress);
 							},
 							result => {
@@ -5352,6 +5358,7 @@ export default class HandwritingPlugin extends Plugin {
 			...carried,
 			codexServiceUrl: typeof raw?.codexServiceUrl === "string" ? raw.codexServiceUrl : DEFAULT_CODEX_URL,
 			codexServiceToken: typeof raw?.codexServiceToken === "string" ? raw.codexServiceToken : "",
+			codexModel: typeof raw?.codexModel === "string" && /^[A-Za-z0-9._-]*$/.test(raw.codexModel) ? raw.codexModel : "",
 			// The retired canvas page's named views: carried through untouched, so an older build still finds them.
 			savedViews: Array.isArray(raw?.savedViews) ? raw.savedViews : [],
 			cameras: raw?.cameras && typeof raw.cameras === "object" ? raw.cameras : {},
@@ -6522,6 +6529,32 @@ export class HandwritingSettingTab extends PluginSettingTab {
 						})); },
 					},
 					{
+						name: "Transcription model",
+						render: setting => {
+							const describe = () => {
+								if (this.plugin.settings.codexModel) return `Handwriting override: ${this.plugin.settings.codexModel}. Used for transcriptions on this device.`;
+								if (Platform.isDesktopApp) {
+									try {
+										const selection = this.plugin.localCodexModelSelection();
+										return `Using ${selection.model} from ${selection.source}. Leave blank to follow the laptop, or enter a model ID to override it.`;
+									} catch { return "Using the laptop's Codex model. Enter a model ID to override it for Handwriting."; }
+								}
+								return "Using the laptop's model. Test the connection to see its name, or enter a model ID to override it on this device.";
+							};
+							setting.setDesc(describe());
+							setting.addText(text => text.setPlaceholder("e.g. gpt-6-sol").setValue(this.plugin.settings.codexModel).onChange(value => {
+								const model = value.trim();
+								if (model && !/^[A-Za-z0-9._-]+$/.test(model)) {
+									setting.setDesc("Model IDs may contain letters, numbers, dots, hyphens, and underscores.");
+									return;
+								}
+								this.plugin.settings.codexModel = model;
+								this.plugin.saveSettingsNow();
+								setting.setDesc(describe());
+							}));
+						},
+					},
+					{
 						name: "Laptop service URL",
 						desc: "On iPad, use the laptop's network address, for example http://192.168.1.20:8765. Keep the laptop and desktop Obsidian running.",
 						render: setting => { setting.addText(text => text.setPlaceholder(DEFAULT_CODEX_URL).setValue(this.plugin.settings.codexServiceUrl).onChange(value => {
@@ -6557,7 +6590,9 @@ export class HandwritingSettingTab extends PluginSettingTab {
 							try {
 								if (Platform.isDesktopApp) await this.plugin.startLocalCodexService();
 								const model = await checkCodexNote({ url: this.plugin.settings.codexServiceUrl, token: this.plugin.settings.codexServiceToken });
-								setting.setDesc(`Codex is ready. Laptop model: ${model}.`);
+								setting.setDesc(this.plugin.settings.codexModel
+									? `Codex is ready. Handwriting will request ${this.plugin.settings.codexModel}; laptop default: ${model}.`
+									: `Codex is ready. Laptop model: ${model}.`);
 							} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Connection failed."); }
 							finally { button.setDisabled(false); }
 						})); },

@@ -2,7 +2,7 @@ import { requestUrl } from "obsidian";
 import { timerHost } from "../util/RuntimeScheduler";
 
 export const DEFAULT_CODEX_URL = "http://127.0.0.1:8765";
-export interface CodexServiceSettings { url: string; token: string }
+export interface CodexServiceSettings { url: string; token: string; model?: string }
 
 export function codexEndpoint(base: string, path: "recognize-note" | "health"): string {
 	let url: URL;
@@ -40,6 +40,7 @@ async function serviceRequest(settings: CodexServiceSettings, path: "recognize-n
 		if (response.status === 429) throw new Error("Codex is still processing another selection. Wait for it to finish.");
 		if (response.status === 400) throw new Error("The handwriting image is invalid. Try a smaller selection.");
 		if (response.status === 503 || response.status === 404) throw new Error("Update Handwriting on the laptop and sign in to Codex CLI.");
+		if (response.status === 500) throw new Error("Codex transcription failed. Check the selected model and laptop sign-in.");
 		if (response.status !== 200) throw new Error(`Laptop service failed (HTTP ${response.status}).`);
 		const value: unknown = response.json;
 		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The laptop service returned an invalid response.");
@@ -61,7 +62,8 @@ export async function recognizeWholeNoteImages(settings: CodexServiceSettings, i
 	if (signal.aborted) throw new Error("Recognition cancelled.");
 	if (!images.length || images.length > 9) throw new Error("Select a smaller handwriting area.");
 	progress("Sending the selected handwriting image to Codex...");
-	const result = await serviceRequest(settings, "recognize-note", signal, JSON.stringify({ images }));
+	const result = await serviceRequest(settings, "recognize-note", signal,
+		JSON.stringify(settings.model?.trim() ? { images, model: settings.model.trim() } : { images }));
 	if (typeof result.markdown !== "string" || !result.markdown.trim()) throw new Error("Codex returned no transcription. Try a clearer image selection.");
 	return result.markdown.replace(/\r\n?/g, "\n").trim();
 }

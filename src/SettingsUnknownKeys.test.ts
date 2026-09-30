@@ -107,12 +107,13 @@ describe("settings control consistency preserves saved behavior", () => {
 		expect(plugin.saved?.codexServiceToken).toBe("generated-token-at-least-24-characters");
 	});
 	it("normalizes Codex service settings", async () => {
-		const configured = await loadThenSave({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexServiceRoot: "C:/obsolete" });
-		expect(configured.saved).toMatchObject({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token" });
+		const configured = await loadThenSave({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexModel: "gpt-choice", codexServiceRoot: "C:/obsolete" });
+		expect(configured.saved).toMatchObject({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexModel: "gpt-choice" });
 		expect(configured.saved).not.toHaveProperty("codexServiceRoot");
-		const invalid = await loadThenSave({ codexServiceUrl: {}, codexServiceToken: 42 });
+		const invalid = await loadThenSave({ codexServiceUrl: {}, codexServiceToken: 42, codexModel: "bad model" });
 		expect(invalid.settings.codexServiceUrl).toBe("http://127.0.0.1:8765");
 		expect(invalid.settings.codexServiceToken).toBe("");
+		expect(invalid.settings.codexModel).toBe("");
 	});
 	it("presents both color controls as dropdowns and identifies global paper scope", async () => {
 		const plugin = await loadThenSave({});
