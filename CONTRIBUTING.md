@@ -37,8 +37,10 @@ exact damage they reproduce.
 
 **No telemetry, no required network access, no dynamic dependency
 installation.** Handwriting does not phone home, does not need a network, and
-does not fetch code at runtime. A change that adds any of those will not be
-merged.
+does not fetch code at runtime. The one exception is this fork's opt-in Codex
+transcription bridge: off by default, local-network only, documented in
+SECURITY.md. A change that adds telemetry or any other network dependency
+will not be merged.
 
 **Comments should explain causes.** The comment that earns its place says
 why the code is shaped that way and what broke without it. Several

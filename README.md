@@ -4,9 +4,10 @@ Handwrite, highlight, erase and lasso directly on your notes and PDFs. Your note
 
 Open a note and write. The note stays a `.md` file.
 
-**This fork transcribes mixed handwriting with Codex.** Run **Transcribe all
-handwriting in this note** or **Lasso: transcribe handwriting**, then review
-the resulting prose and LaTeX as editable Markdown. Existing note text and
+**This fork transcribes mixed handwriting with Codex.** Turn on **Transcribe
+handwriting with Codex** in Handwriting settings (off by default), then run
+**Transcribe all handwriting in this note** or **Lasso: transcribe
+handwriting** and review the resulting prose and LaTeX as editable Markdown. Existing note text and
 pasted images stay in place. You can insert beside matching note sections, at
 the captured cursor, or at the end, and optionally replace the corresponding
 pen ink. See [the workflow](docs/math.md) and [Codex CLI setup](services/codex/README.md).
@@ -105,7 +106,8 @@ Scroll down till you see this and hit the plus in upper right hand
 
 <img width="464" height="167" alt="the BRAT settings panel, with the add-plugin button in the upper right" src="https://github.com/user-attachments/assets/049f790d-7e7f-452b-94ae-36d50f06b6ae" />
 
-paste this in : ellimist-afk/handwriting > hit add plugin
+paste this in : vSebas/handwriting > hit add plugin (the screenshots on this
+page come from the upstream plugin's settings; the steps are the same)
 
 ### required
 
@@ -227,7 +229,7 @@ if you have any questions i will try to answer as best i can
 
 ## reporting problems
 
-[open an issue](https://github.com/ellimist-afk/handwriting/issues/new/choose). report what happened. remember to include which device and pen please.
+[open an issue](https://github.com/ellimist-afk/handwriting/issues/new/choose) on the upstream tracker for base plugin problems. for anything about this fork's Codex transcription, [open an issue on the fork](https://github.com/vSebas/handwriting/issues) instead. report what happened. remember to include which device and pen please.
 
 EZMODE reporting:
 
@@ -248,9 +250,9 @@ and i guarantee nothing will leave your device unless you press `Upload` button.
 * audio alongside ink
 * ruler + compass on screen
 * laser pointer
-* ocr / handwriting to text ( very soon )
-* searchable handwriting ( very soon )
+* ocr / handwriting to text: available in this fork; see [setup](docs/math.md)
 * handwriting to math/latex: available in this fork; see [setup](docs/math.md)
+* searchable handwriting ( very soon )
 * text boxes ;)
 * canvas mode
 * more custom colors
