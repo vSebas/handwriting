@@ -49,9 +49,10 @@ function zoomNoteByCeiling(): string {
 	return m![1]!;
 }
 
-/** `commitCameraScale`'s refusal, the last gate a pinch passes before it is committed. */
+/** `commitCameraScale`'s refusal, the last gate a pinch passes before it is
+ * committed - now the named "above-max" clause of the traced refusal ternary. */
 function commitCameraScaleCeiling(): string {
-	const m = overlay.match(/\|\|next>(\w+)\|\|!validCameraScale\(next,/);
+	const m = overlay.match(/:next>(\w+)\?"above-max"/);
 	expect(m, "commitCameraScale's `next>N` refusal was not found in InkOverlay.ts; update this pin with it").not.toBeNull();
 	return m![1]!;
 }

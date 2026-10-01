@@ -365,7 +365,7 @@ import {
 	recordProbe,
 	setProbeGeometry,
 } from "./PenProbe";
-import { InlinePenRouter, anyHandOnGlass, bandEraserIntent } from "./InlinePenRouter";
+import { InlinePenRouter, anyHandOnGlass, bandEraserIntent, traceSurface } from "./InlinePenRouter";
 import { armMouseInkQuietly, markToolPicked, mouseInkEnabled, toolPickedHere } from "./MouseInk";
 import { penInkEnabled } from "./PenInk";
 import { fingerInkEligible } from "./FingerInk";
@@ -1924,6 +1924,16 @@ export class InkOverlayPlugin {
 	private resizeOwedByLock = false;
 	/** Host-local px the preview raster is currently translated by. See applyPreviewInkOffset. */
 	private previewInkOffset = 0;
+	/**
+	 * Settle-path breadcrumbs into the pen trace the bug report exports.
+	 * Diagnostics-gated inside traceSurface; one line per settle DECISION
+	 * (never per frame), so a device report can say which exit a pinch took -
+	 * added for the iPad "zoom-out keeps the old stroke size" report, which
+	 * no desktop rig reproduces.
+	 */
+	private tracePinch(note: string): void {
+		traceSurface("pinch", null, note);
+	}
 	/**
 	 * Host-local px the preview raster is moved DOWN by because a block above
 	 * the content changed height during the gesture (a title that rewraps as the
@@ -5806,6 +5816,7 @@ export class InkOverlayPlugin {
 			this.reducePinchConstraint(next, phase === "end");
 		}
 		if (phase === "end") {
+			this.tracePinch(`end: next=${next.toFixed(4)} from=${(this.pinchRefScale ?? this.pinchScaleNow).toFixed(4)} pending=${this.pinchPending ? this.pinchPending.next.toFixed(4) : "none"} preview=${this.pinchPreview}`);
 			if (targetMoved && this.pinchPending === null) this.pinchPending = { next: this.pinchScaleNow };
 			// Nothing may still be queued behind the settle: a live frame
 			// running after it would write the mid-gesture styles back.
@@ -5980,6 +5991,7 @@ export class InkOverlayPlugin {
 		if (pending) this.applyPinchScale(pending.next, settle);
 		else if (settle && (this.pinchPreview || this.pinchScaleNow !== this.pinchRasterScale))
 			this.applyPinchScale(this.pinchScaleNow, true);
+		else if (settle) this.tracePinch(`settle skipped: raster already ${this.pinchRasterScale.toFixed(4)}`);
 	}
 
 	/**
@@ -5993,7 +6005,8 @@ export class InkOverlayPlugin {
 	 */
 	private applyPinchScale(next: number, settle: boolean): void {
 		const anchor = this.pinchAnchor;
-		if (!anchor) return;
+		if (!anchor) { if (settle) this.tracePinch(`settle dropped: no anchor, next=${next.toFixed(4)}`); return; }
+		if (settle) this.tracePinch(`settle begins next=${next.toFixed(4)} raster=${this.pinchRasterScale.toFixed(4)} preview=${this.pinchPreview}`);
 		// Both scales come from the GESTURE, not from the previous frame: the
 		// reference the gesture started at, and where it is being asked to go.
 		const from = this.pinchRefScale ?? this.pinchScaleNow;
@@ -6095,7 +6108,8 @@ export class InkOverlayPlugin {
 			// ink stays at the old raster scale forever (a pen contact holding
 			// frame.locked through the settle is a supported state, and iOS can
 			// deliver the end inside exactly that window).
-			if (!committed) { this.pinchSettleOwed = true; this.scheduleOwedSettle(); this.endPreviewPaper("cancel"); this.retirePanSettle("the settle commit was refused"); this.clearViewportPan(); return; }
+			if (!committed) { this.tracePinch(`settle refused -> owed next=${next.toFixed(4)}`); this.pinchSettleOwed = true; this.scheduleOwedSettle(); this.endPreviewPaper("cancel"); this.retirePanSettle("the settle commit was refused"); this.clearViewportPan(); return; }
+			this.tracePinch(`settle committed next=${next.toFixed(4)}`);
 			this.pinchRasterScale = next;
 			this.setViewportScroll(nextLeft,nextTop);
 			this.reanchorPan();
@@ -8270,15 +8284,17 @@ export class InkOverlayPlugin {
 			this.owedSettleRaf = 0;
 			if (!this.pinchSettleOwed || this.retiring || !this.container) return;
 			if (this.view !== view || this.filePath() !== path) return;
-			if (this.pinchPreview || this.pinchGive !== null || this.pinchRefScale !== null) return;
-			if (this.frame.locked || this.scaleGeometryValid === false) return;
+			if (this.pinchPreview || this.pinchGive !== null || this.pinchRefScale !== null) { this.tracePinch("owed settle holds: gesture live"); return; }
+			if (this.frame.locked || this.scaleGeometryValid === false) { this.tracePinch(`owed settle holds: ${this.frame.locked ? "frame-locked" : "geometry-invalid"}`); return; }
 			this.pinchSettleOwed = false;
 			// The same in-place re-commit handleResize's own resize path uses:
 			// no scroll target, no settle hold, scroll demand preserved. A
 			// commit refused here leaves the debt standing for the next trigger.
 			if (!this.commitCameraScale(this.pinchScaleNow, undefined, undefined, true)) {
+				this.tracePinch("owed settle refused again");
 				this.pinchSettleOwed = true;
 			} else {
+				this.tracePinch(`owed settle paid at ${this.pinchScaleNow.toFixed(4)}`);
 				// Unlike the resize path's same-scale re-commit, this one
 				// changed what the raster reflects: latch it, or flushPinch's
 				// raster-vs-scale guard keeps scheduling re-rasters of a
@@ -8300,9 +8316,11 @@ export class InkOverlayPlugin {
 	private healStuckPinch(): boolean {
 		if (!this.pinchPreview || this.measureHold !== null || this.pinchGive !== null) return false;
 		if (this.pinchAnchor !== null && this.pinchRefScale !== null) {
+			this.tracePinch("stuck preview healed: rebase");
 			this.rebasePinch();
 			return true;
 		}
+		this.tracePinch("stuck preview healed: dropped, settle owed");
 		this.pinchPreview = false;
 		this.pinchSettleOwed = true;
 		this.scheduleOwedSettle();
@@ -8409,7 +8427,7 @@ export class InkOverlayPlugin {
 		// below would clear that debt as "a new gesture" - but there is no
 		// gesture here, only a lost end, so no later settle would ever pay it.
 		// Skip the re-anchor; a real start replaces it anyway.
-		if (this.pinchSettleOwed) return;
+		if (this.pinchSettleOwed) { this.tracePinch("rebase skipped: settle owed"); return; }
 		this.pinch("start", 1, target);
 		this.pinchRatioBase = base;
 	}
@@ -9210,9 +9228,16 @@ export class InkOverlayPlugin {
   // Below the floor only a scale at or above the reference commits: the
   // gesture's start while a pinch settles (its previews already wrote
   // pinchScaleNow), else the current scale, so a re-commit in place passes.
-  if(this.frame.locked||this.scaleGeometryValid===false||(!bypassFloor&&next<this.zoomFloor&&!(next>=(this.pinchRefScale??this.pinchScaleNow)))||next>MAX_PINCH_SCALE||!validCameraScale(next,this.view.dom.clientWidth,this.view.dom.clientHeight))return false;
+  // One name per refusal clause, for the trace: a refused commit used to be
+  // a bare `false` five ways, and the device report could not say which.
+  const refusal=this.frame.locked?"frame-locked":this.scaleGeometryValid===false?"geometry-invalid"
+   :(!bypassFloor&&next<this.zoomFloor&&!(next>=(this.pinchRefScale??this.pinchScaleNow)))?"below-floor"
+   :next>MAX_PINCH_SCALE?"above-max"
+   :!validCameraScale(next,this.view.dom.clientWidth,this.view.dom.clientHeight)?"invalid-scale":null;
+  if(refusal){this.tracePinch(`commit refused ${refusal} next=${next.toFixed(4)} now=${this.pinchScaleNow.toFixed(4)} raster=${this.pinchRasterScale.toFixed(4)}`);return false;}
   const previous=this.pinchScaleNow,effective=this.cssScale/previous*next;
-  if(!validCameraScale(effective)||!this.prepareViewportLayout())return false;
+  if(!validCameraScale(effective)){this.tracePinch(`commit refused invalid-effective ${effective}`);return false;}
+  if(!this.prepareViewportLayout()){this.tracePinch("commit refused no-layout");return false;}
   const layout=this.viewportLayout!;
   const width=layout.width/next,height=layout.height/next;
   const target=scroll??{left:this.view.scrollDOM.scrollLeft,top:this.view.scrollDOM.scrollTop};
