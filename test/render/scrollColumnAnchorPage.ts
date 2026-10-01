@@ -5257,7 +5257,54 @@ async function runTearUpdateCarry(cx: number, cy: number) {
 		outcome: hold?.outcome ?? null };
 }
 
-(window as any).scrollColumnAnchor = { setScrollExpansionEnabled, runTearPinchBurst, runTearSeedExtentInk, runTearPinchCounted, runTearScrollTo, runPinchTeardown, countMagentaOutside, setShapeSnap, run, runFocal, runCentroidPan, runTopBoundary, runMarginPayment, runPinchReticle, runInfiniteTraversal, runExpandedDrawCoverage, runConstraintOrder, runColumnChanges, runColumnAutoControl, runColumnLocalGuardPlant, runViewportStyleObserver, runScrollDraw, runOwnedRequestCancellation, runZoomedWriteRoom, runLayerBoundsMount, runLayerBoundsTeardown, runPixelColumn, detectMark, runContinuousOffsetTrace , runPaneScrollMount, runPaneScrollWrite, runPaneScrollNudge, runPaneScrollRead , runTileMount, runTileRead, runTileDraw, runTileTeardown, runTileHash, runTileScroll , runTearMount, runTearRead, runTearPinch, runTearTeardown, runTearBacking, runTearLastStrokePoint, runTearForcedRefreshPlant, runTearForcedRefreshSettled, runTearSettleResize, runTearUpdateCarry };
+/**
+ * The iPad "zoom stopped changing stroke sizes" report: the gesture END
+ * delivered while a pen contact holds the frame lock - the window iOS can
+ * deliver it inside. The settle's commit is then REFUSED (commitCameraScale
+ * returns false on frame.locked), and before the owed-settle mechanism
+ * nothing ever retried: the strokes kept the pre-gesture raster scale for
+ * the life of the editor. Drives the REAL router's pinch, lands the lock as
+ * a pen contact does before the end arrives, lifts through the real penUp,
+ * and records every commitCameraScale call with the lock state it met.
+ */
+async function runTearLockedSettle(cx: number, cy: number) {
+	await runTearMount(1, 0, null, true, { fx: 0.5, fy: 0.5 });
+	const rig = tearRig!; const overlay = rig.overlay as any; const router = overlay.router;
+	const commits: { scale: number; committed: boolean; locked: boolean }[] = [];
+	const commit = overlay.commitCameraScale;
+	overlay.commitCameraScale = function (next: number, ...rest: unknown[]) {
+		const row = { scale: next, committed: false, locked: (this as any).frame.locked as boolean };
+		commits.push(row);
+		row.committed = commit.call(this, next, ...rest) as boolean;
+		return row.committed;
+	};
+	const setTouch = (spread: number) => { router.touchPos.set(861, { x: cx - spread / 2, y: cy }); router.touchPos.set(862, { x: cx + spread / 2, y: cy }); };
+	const ev = (type: string) => new PointerEvent(type, { pointerId: 862, pointerType: "touch" });
+	setTouch(300); router.beginPinch(ev("pointerdown"));
+	for (let i = 1; i <= 8; i++) { setTouch(300 + 150 * i / 8); router.updatePinch(ev("pointermove")); await frame(); }
+	// The pen lands before the end reaches the overlay. frame.begin() is the
+	// whole effect a pen-down has on the lock (StrokeFrame.ts).
+	overlay.frame.begin();
+	router.endPinch(ev("pointerup"), { x: cx, y: cy });
+	router.touchPos.clear();
+	await settle(10); await new Promise(res => setTimeout(res, 350)); await settle(6);
+	const whileLocked = {
+		scaleNow: overlay.pinchScaleNow as number,
+		refused: commits.filter(c => c.locked && !c.committed).length,
+		landed: commits.filter(c => c.committed).length,
+	};
+	// The real pen lift entry: the same method the router's onPenUp calls.
+	overlay.penUp();
+	await settle(10); await new Promise(res => setTimeout(res, 350)); await settle(6);
+	return { whileLocked, afterLift: {
+		scaleNow: overlay.pinchScaleNow as number,
+		rasterScale: overlay.pinchRasterScale as number,
+		landed: commits.filter(c => c.committed).map(c => c.scale),
+		preview: !!overlay.pinchPreview,
+	} };
+}
+
+(window as any).scrollColumnAnchor = { setScrollExpansionEnabled, runTearLockedSettle, runTearPinchBurst, runTearSeedExtentInk, runTearPinchCounted, runTearScrollTo, runPinchTeardown, countMagentaOutside, setShapeSnap, run, runFocal, runCentroidPan, runTopBoundary, runMarginPayment, runPinchReticle, runInfiniteTraversal, runExpandedDrawCoverage, runConstraintOrder, runColumnChanges, runColumnAutoControl, runColumnLocalGuardPlant, runViewportStyleObserver, runScrollDraw, runOwnedRequestCancellation, runZoomedWriteRoom, runLayerBoundsMount, runLayerBoundsTeardown, runPixelColumn, detectMark, runContinuousOffsetTrace , runPaneScrollMount, runPaneScrollWrite, runPaneScrollNudge, runPaneScrollRead , runTileMount, runTileRead, runTileDraw, runTileTeardown, runTileHash, runTileScroll , runTearMount, runTearRead, runTearPinch, runTearTeardown, runTearBacking, runTearLastStrokePoint, runTearForcedRefreshPlant, runTearForcedRefreshSettled, runTearSettleResize, runTearUpdateCarry };
 /**
  * THE CAMERA'S SCALE OF RECORD, READ BESIDE AN INDEPENDENT MEASUREMENT.
  *
