@@ -16,7 +16,11 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The rendered-geometry step alone runs past 15 minutes now (measured
+    # 2026-10-01: the first run on this fork was cancelled by the old cap
+    # mid-suite, every completed test green). Sized to the suite, not the
+    # original four quick checks.
+    timeout-minutes: 40
     # A push to a branch in this repo and the pull_request GitHub opens for
     # that same branch are the same commit; without this a same-repo PR ran
     # the whole matrix twice. pull_request still runs for a fork PR, which

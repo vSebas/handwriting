@@ -1907,6 +1907,21 @@ export class InkOverlayPlugin {
 	/** The scale the ink raster currently reflects, so a settle that would
 	 * change nothing does not reallocate every canvas. */
 	private pinchRasterScale = 1;
+	/**
+	 * A pinch settle was REFUSED (frame locked under a pen contact, or the
+	 * scale geometry momentarily invalid) with the preview's CSS scale already
+	 * on screen: the raster still shows the old scale and nothing downstream
+	 * would ever retry. Owed until a commit at the current scale lands;
+	 * replayed at pen lift, when the geometry turns valid again, and by the
+	 * stuck-preview heal - so a lost gesture end can never freeze the raster
+	 * for the life of the editor (the iPad "zoom stopped changing stroke
+	 * sizes" report).
+	 */
+	private pinchSettleOwed = false;
+	private owedSettleRaf = 0;
+	/** handleResize measured a scale/font change it could not adopt under a
+	 * pen contact's frame lock; replayed once at pen lift rather than dropped. */
+	private resizeOwedByLock = false;
 	/** Host-local px the preview raster is currently translated by. See applyPreviewInkOffset. */
 	private previewInkOffset = 0;
 	/**
@@ -3556,7 +3571,12 @@ export class InkOverlayPlugin {
 		// UNDER THE HOLD (D-COV, AD-4 i): a resize that did not commit above
 		// reallocates nothing and moves no band; the raster keeps the basis the
 		// preview translate was solved against until the settle re-rasters.
-		if (this.pinchPreview) return;
+		// A preview whose hold is GONE can never settle on its own - heal it
+		// rather than hold this early-return forever (lost end event, iOS).
+		if (this.pinchPreview) {
+			this.healStuckPinch();
+			return;
+		}
 		this.clearSnapPreview();
 		if (!this.container) return;
 		if (this.canvasMode) this.lastExtentInputs = null;
@@ -3654,6 +3674,15 @@ export class InkOverlayPlugin {
 			this.paperFontPx = fontPx;
 			this.paperRestZoom = Number.NaN;
 			this.updatePaperSpacing();
+		} else if (
+			Math.abs(measuredCssScale - this.cssScale) > this.cssScale * SCALE_EPSILON ||
+			measuredFontZoom !== this.fontZoom
+		) {
+			// The contact owns the frame, so the adoption above was skipped -
+			// DEFERRED, not dropped: a zoom landing with a pen on the glass used
+			// to leave the raster at the old scale until some later unrelated
+			// resize. penUp replays this resize once the frame is free.
+			this.resizeOwedByLock = true;
 		}
 		const layoutW = this.container.offsetWidth || rect.width;
 		const layoutH = this.container.offsetHeight || rect.height;
@@ -4047,6 +4076,9 @@ export class InkOverlayPlugin {
 			return;
 		}
 		this.scaleGeometryValid = true;
+		// The geometry just turned provably valid: pay any settle a refusal
+		// left owed (the rAF re-checks every hold condition for itself).
+		if (this.pinchSettleOwed) this.scheduleOwedSettle();
 		// Adopt it only when it MEANS something. Rect widths are fractional,
 		// so this quotient wobbles in its last decimals every frame; letting
 		// that through moved the camera origin every frame, and repaint()
@@ -4060,6 +4092,13 @@ export class InkOverlayPlugin {
 			this.router?.cameraTransformChanged();
 			this.cssScale = measured;
    if(this.viewportLayout && Math.abs(measured/this.pinchScaleNow-this.viewportLayout.externalScale)>SCALE_EPSILON) this.viewportLayout.externalScale=measured/this.pinchScaleNow;
+			// The canvases' counter-scaled boxes are derived from cssScale but
+			// written only on reallocation; a cssScale adopted here without a
+			// backing change would leave them sized for the old scale under the
+			// transform host (mobile WebKit without CSS zoom). Compositor-layer
+			// sizing only - the box and its counter-transform cancel exactly, so
+			// rendered geometry is unchanged.
+			this.placeCanvasLayers();
 		}
 		// And the FONT zoom, which until 1.4.10 only `handleResize` ever
 		// wrote. The two observers do not fire together: changing the editor
@@ -4971,6 +5010,13 @@ export class InkOverlayPlugin {
 			this.bandSyncDeferred = false;
 			this.scheduleRepaint("scroll");
 		}
+		// Adopt the scale work the contact's frame lock deferred: a resize
+		// measured mid-stroke, and any pinch settle refused while locked.
+		if (this.resizeOwedByLock) {
+			this.resizeOwedByLock = false;
+			this.handleResize();
+		}
+		if (this.pinchSettleOwed) this.scheduleOwedSettle();
 		if(this.viewportStyleDirty)this.scheduleViewportStyleRefresh();
 		// The stroke is over: the strip returns (a beat later, so an eraser
 		// scrub's rapid lift-and-reland does not strobe it) and its buttons
@@ -5652,7 +5698,19 @@ export class InkOverlayPlugin {
 		// s137: with the canvas off a two-finger gesture is not a zoom. Every phase is ignored here, so
 		// no preview starts, nothing settles and nothing is left pending; the router keeps its own
 		// touch bookkeeping (two fingers still count as two) and the page does not move.
-		if (!this.canvasMode) return;
+		//
+		// EXCEPT a gesture's END while a preview, give or anchor is still live:
+		// canvas mode flipped off mid-gesture (a setting toggle, a frontmatter
+		// edit) used to eat the end here, and with the measure-hold timer
+		// already consumed nothing else could ever close the preview -
+		// handleResize and repaint then painted the pre-gesture camera for the
+		// life of the editor. The end still settles; only new gestures are refused.
+		if (!this.canvasMode) {
+			const liveGesture =
+				this.pinchPreview || this.pinchGive !== null ||
+				this.pinchRefScale !== null || this.pinchAnchor !== null;
+			if (!(phase === "end" && liveGesture)) return;
+		}
 		// The router's ratios are relative to ITS gesture start. A preview the
 		// watchdog settled in place re-anchors mid-gesture (`rebasePinch`), so
 		// from then on they divide by the ratio at which that happened.
@@ -5678,6 +5736,9 @@ export class InkOverlayPlugin {
 			this.hideBlankPinchLayers();
 			// Invalidate an earlier navigation's pending measure write.
 			this.viewportGeneration++;
+			// A new gesture takes over any settle an earlier refusal still owed:
+			// its own settle commits at the scale the fingers leave.
+			this.pinchSettleOwed = false;
 			this.pinchRefScale = this.pinchScaleNow;
 			// The anchor is captured ONCE, here. Every frame of the gesture
 			// is then computed from this state, so the view cannot chase the
@@ -5758,17 +5819,7 @@ export class InkOverlayPlugin {
 				// available to the final coalesced move.
 				this.flushPinch(true);
 			} finally {
-				this.restorePinchLayers();
-				this.pinchRefScale = null;
-				this.pinchAnchor = null;
-				this.pinchPreview = false;
-				// A preview that ended without its settle (cancelled, refused, or thrown) takes its paper down here.
-				if (!this.previewPaperHandoff) this.endPreviewPaper("cancel");
-				this.previewPaperHandoff = false;
-				// A cancelled preview drops the snap's residual it was carrying.
-				if (this.paperPanWritten) this.writePaperPan();
-				this.releaseMeasures();
-				if (this.viewportStyleDirty) this.scheduleViewportStyleRefresh();
+				this.closePinchPreview();
 			}
 			return;
 		}
@@ -5784,6 +5835,26 @@ export class InkOverlayPlugin {
 				this.flushPinch(false);
 			});
 		}
+	}
+
+	/**
+	 * The release-without-settle half of a gesture end: every field the end
+	 * path must put down whether or not its settle committed. Extracted from
+	 * `pinch("end")`'s finally so the recovery paths (stuck-preview heal,
+	 * canvas-mode-off end) close a preview exactly the way a real end does.
+	 */
+	private closePinchPreview(): void {
+		this.restorePinchLayers();
+		this.pinchRefScale = null;
+		this.pinchAnchor = null;
+		this.pinchPreview = false;
+		// A preview that ended without its settle (cancelled, refused, or thrown) takes its paper down here.
+		if (!this.previewPaperHandoff) this.endPreviewPaper("cancel");
+		this.previewPaperHandoff = false;
+		// A cancelled preview drops the snap's residual it was carrying.
+		if (this.paperPanWritten) this.writePaperPan();
+		this.releaseMeasures();
+		if (this.viewportStyleDirty) this.scheduleViewportStyleRefresh();
 	}
 
 	/** Snapshot only at existing geometry reads, never for each pointer event. */
@@ -6019,8 +6090,12 @@ export class InkOverlayPlugin {
 			try { committed = this.commitCameraScale(next, {left:nextLeft,top:nextTop}, this.panAnchorHold); } finally { this.previewPaperSettling = false; }
 			// A REFUSED SETTLE IS AN EXIT PATH. Nothing downstream is going to
 			// re-derive this pan, so it must not be left on the children with
-			// no gesture tracking it.
-			if (!committed) { this.endPreviewPaper("cancel"); this.retirePanSettle("the settle commit was refused"); this.clearViewportPan(); return; }
+			// no gesture tracking it. The re-raster it skipped is OWED: the
+			// preview's CSS scale is already on screen, and without a retry the
+			// ink stays at the old raster scale forever (a pen contact holding
+			// frame.locked through the settle is a supported state, and iOS can
+			// deliver the end inside exactly that window).
+			if (!committed) { this.pinchSettleOwed = true; this.scheduleOwedSettle(); this.endPreviewPaper("cancel"); this.retirePanSettle("the settle commit was refused"); this.clearViewportPan(); return; }
 			this.pinchRasterScale = next;
 			this.setViewportScroll(nextLeft,nextTop);
 			this.reanchorPan();
@@ -8181,6 +8256,60 @@ export class InkOverlayPlugin {
 	}
 
 	/**
+	 * Replay the settle a refusal left owed, out of the refusing call stack
+	 * (the same one-rAF shape as `resizeOutOfUpdate`). Holds - without paying
+	 * the debt - while a live gesture owns the scale, while a pen contact
+	 * still locks the frame, or while the geometry is still invalid; each of
+	 * those states has its own replay trigger (`pinch` start's own settle,
+	 * `penUp`, `syncCamera` flipping the geometry valid).
+	 */
+	private scheduleOwedSettle(): void {
+		if (!this.pinchSettleOwed || this.owedSettleRaf !== 0) return;
+		const view = this.view, path = this.filePath();
+		this.owedSettleRaf = this.winRef.requestAnimationFrame(() => {
+			this.owedSettleRaf = 0;
+			if (!this.pinchSettleOwed || this.retiring || !this.container) return;
+			if (this.view !== view || this.filePath() !== path) return;
+			if (this.pinchPreview || this.pinchGive !== null || this.pinchRefScale !== null) return;
+			if (this.frame.locked || this.scaleGeometryValid === false) return;
+			this.pinchSettleOwed = false;
+			// The same in-place re-commit handleResize's own resize path uses:
+			// no scroll target, no settle hold, scroll demand preserved. A
+			// commit refused here leaves the debt standing for the next trigger.
+			if (!this.commitCameraScale(this.pinchScaleNow, undefined, undefined, true)) {
+				this.pinchSettleOwed = true;
+			} else {
+				// Unlike the resize path's same-scale re-commit, this one
+				// changed what the raster reflects: latch it, or flushPinch's
+				// raster-vs-scale guard keeps scheduling re-rasters of a
+				// raster that is already right.
+				this.pinchRasterScale = this.pinchScaleNow;
+			}
+		});
+	}
+
+	/**
+	 * A preview whose measure hold is GONE has no watchdog timer left: nothing
+	 * can ever settle it, and `handleResize`/`repaint` early-return on
+	 * `pinchPreview`, so the surface would paint the pre-gesture camera for
+	 * the life of the editor. With the gesture state still whole this settles
+	 * in place exactly as the watchdog would; without it, the preview flag
+	 * comes down and the re-raster is owed. Returns whether it intervened -
+	 * a healthy preview (hold live, watchdog armed) is never touched.
+	 */
+	private healStuckPinch(): boolean {
+		if (!this.pinchPreview || this.measureHold !== null || this.pinchGive !== null) return false;
+		if (this.pinchAnchor !== null && this.pinchRefScale !== null) {
+			this.rebasePinch();
+			return true;
+		}
+		this.pinchPreview = false;
+		this.pinchSettleOwed = true;
+		this.scheduleOwedSettle();
+		return true;
+	}
+
+	/**
 	 * Give CodeMirror its measuring back and replay what was held. Idempotent;
 	 * every end path calls it.
 	 *
@@ -8276,6 +8405,11 @@ export class InkOverlayPlugin {
 		const target = c ? { x: c.clientX, y: c.clientY } : { x: anchor.targetX ?? anchor.focalX, y: anchor.targetY ?? anchor.focalY };
 		const base = this.pinchLastRatio || 1;
 		this.pinch("end", 1, target);
+		// A refused settle left its re-raster owed. The synthetic re-anchor
+		// below would clear that debt as "a new gesture" - but there is no
+		// gesture here, only a lost end, so no later settle would ever pay it.
+		// Skip the re-anchor; a real start replaces it anyway.
+		if (this.pinchSettleOwed) return;
 		this.pinch("start", 1, target);
 		this.pinchRatioBase = base;
 	}
@@ -8360,6 +8494,10 @@ export class InkOverlayPlugin {
 
  private restoreViewportLayout():void {
   this.pinchPreview=false;
+  // A teardown owes nothing: the next mount rebuilds from scratch.
+  this.pinchSettleOwed=false;
+  this.resizeOwedByLock=false;
+  if(this.owedSettleRaf!==0){this.winRef.cancelAnimationFrame(this.owedSettleRaf);this.owedSettleRaf=0;}
   // Before the no-layout return: an unmount at rest leaves nothing behind either.
   this.clearOwnPaperVars();
   // Reached from update() on a file switch, inside CodeMirror's own update:
@@ -9211,6 +9349,9 @@ export class InkOverlayPlugin {
   }});
   }
   this.mobileTools?.refresh();
+  // This commit re-rastered at the current scale: any settle a refusal left
+  // owed is paid, whoever the committer was.
+  this.pinchSettleOwed = false;
   return true;
   } finally { this.commitDepth--; }
  }
@@ -10954,6 +11095,12 @@ export class InkOverlayPlugin {
 		// 2372-2612 fell outside it until the settle. What a bigger band would
 		// show waits for the settle, which re-rasters against the settled column.
 		if (this.pinchPreview && this.lastPaintCam !== null) {
+			// The same stuck-preview heal handleResize carries: a preview with
+			// no measure hold has no watchdog and would pin this branch forever.
+			if (this.healStuckPinch()) {
+				this.scheduleRepaint();
+				return;
+			}
 			const work = this.damage.take();
 			if (work === "all" || work.length > 0) {
 				const path = this.filePath();
