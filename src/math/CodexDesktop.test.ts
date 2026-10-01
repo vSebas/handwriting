@@ -8,6 +8,7 @@ import process from "node:process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { LocalCodexService } from "./CodexDesktop";
+import { MAX_BODY_BYTES, UNPINNED_MODEL_LABEL } from "./CodexLimits";
 
 const network = vi.hoisted(() => vi.fn());
 vi.mock("obsidian", async original => ({ ...await original<object>(), requestUrl: network }));
@@ -17,6 +18,10 @@ let service: LocalCodexService | null;
 let commands: string[][];
 let port: number;
 let settings: { url: string; token: string; model: string };
+/** With this set, a spawned `codex exec` parks here instead of closing, so a
+ * test can hold the single-flight slot and assert what frees it. */
+let holdExec: boolean;
+let heldExec: Array<EventEmitter & { kill: ReturnType<typeof vi.fn> }>;
 
 beforeEach(() => {
 	folder = fs.mkdtempSync(path.join(os.tmpdir(), "handwriting-bridge-test-"));
@@ -29,12 +34,16 @@ beforeEach(() => {
 	settings = { url: `http://127.0.0.1:${port}`, token: "integration-token-at-least-24-characters", model: "" };
 	service = null;
 	const fakeProcess = { platform: "win32", env: { PATH: folder } };
+	holdExec = false;
+	heldExec = [];
 	const child = {
 		spawn: (_binary: string, args: string[]) => {
 			commands.push(args);
 			const stdin = new PassThrough();
 			const stdout = new PassThrough();
-			const task = Object.assign(new EventEmitter(), { kill: vi.fn(), stdin, stdout });
+			// Like a real child, kill() leads to a `close` (code null on signal).
+			const task: EventEmitter & { kill: ReturnType<typeof vi.fn>; stdin: PassThrough; stdout: PassThrough } =
+				Object.assign(new EventEmitter(), { kill: vi.fn(() => queueMicrotask(() => task.emit("close", null))), stdin, stdout });
 			if (args[0] === "app-server") stdin.on("data", (chunk: Buffer) => {
 				const request = JSON.parse(chunk.toString("utf8"));
 				if (request.id === 1) stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }) + "\n");
@@ -47,7 +56,10 @@ beforeEach(() => {
 			});
 			queueMicrotask(() => {
 				if (args[0] === "app-server") return;
-				if (args[0] === "exec") fs.writeFileSync(args[args.indexOf("--output-last-message") + 1]!, "Text and $x^2$");
+				if (args[0] === "exec") {
+					fs.writeFileSync(args[args.indexOf("--output-last-message") + 1]!, "Text and $x^2$");
+					if (holdExec) { heldExec.push(task); return; }
+				}
 				if (args[0] === "login" && args[1] !== "status") signedIn = true;
 				task.emit("close", args[0] === "login" && args[1] === "status" && !signedIn ? 1 : 0);
 			});
@@ -104,6 +116,108 @@ describe("desktop Codex bridge", () => {
 		settings.model = "";
 		fs.rmSync(path.join(folder, ".codex", "config.toml"));
 		const unpinned = await fetch(base + "/health", { headers });
-		expect(await unpinned.json()).toMatchObject({ model: "Codex CLI default (not pinned)" });
+		expect(await unpinned.json()).toMatchObject({ model: UNPINNED_MODEL_LABEL });
+	});
+
+	async function startedService(): Promise<{ base: string; headers: Record<string, string> }> {
+		service = new LocalCodexService(() => settings);
+		await service.signIn();
+		await service.start();
+		return { base: `http://127.0.0.1:${port}`, headers: { Authorization: `Bearer ${settings.token}`, "Content-Type": "application/json" } };
+	}
+
+	const PNG_PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9YlMP9kAAAAASUVORK5CYII=";
+
+	async function untilHeldExec(count: number): Promise<void> {
+		for (let i = 0; i < 200 && heldExec.length < count; i++) await new Promise(resolve => setTimeout(resolve, 5));
+		expect(heldExec.length).toBe(count);
+	}
+
+	it("replies with a typed error instead of hanging when a request handler throws", async () => {
+		// Before the handler-wide catch, /health with an invalid saved override
+		// rejected inside the async handler: no reply, and the request sat open
+		// until the CLIENT's timeout. The client's health clock is 10s, so a
+		// hang here fails the suite by itself - but assert the shape anyway.
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { base, headers } = await startedService();
+			settings.model = "bad model";
+			const health = await fetch(base + "/health", { headers });
+			expect(health.status).toBe(500);
+			expect(await health.json()).toEqual({ error: "Codex request failed." });
+			expect(logged).toHaveBeenCalledWith("[handwriting] Codex bridge request failed", expect.any(Error));
+		} finally { logged.mockRestore(); }
+	});
+
+	it("rejects an oversized request from its headers, before reading the body", async () => {
+		const { base } = await startedService();
+		const status = await new Promise<number>((resolve, reject) => {
+			const request = http.request(`${base}/recognize-note`, { method: "POST", headers: {
+				Authorization: `Bearer ${settings.token}`, "Content-Type": "application/json",
+				"Content-Length": String(MAX_BODY_BYTES + 1),
+			} }, response => { resolve(response.statusCode ?? 0); response.resume(); request.destroy(); });
+			request.on("error", reject);
+			request.write("{");
+		});
+		expect(status).toBe(413);
+	});
+
+	it("rejects images that are not PNGs or whose header promises too many pixels", async () => {
+		const { base, headers } = await startedService();
+		const notPng = Buffer.alloc(32, 7).toString("base64");
+		const wrongMagic = await fetch(base + "/recognize-note", { method: "POST", headers,
+			body: JSON.stringify({ images: [`data:image/png;base64,${notPng}`] }) });
+		expect(wrongMagic.status).toBe(400);
+		// A real PNG signature whose IHDR claims 3000x3000 - over the pixel cap
+		// read straight from the header, no decode involved.
+		const oversized = Buffer.alloc(32);
+		Buffer.from("89504e470d0a1a0a", "hex").copy(oversized, 0);
+		oversized.writeUInt32BE(3000, 16);
+		oversized.writeUInt32BE(3000, 20);
+		const tooBig = await fetch(base + "/recognize-note", { method: "POST", headers,
+			body: JSON.stringify({ images: [`data:image/png;base64,${oversized.toString("base64")}`] }) });
+		expect(tooBig.status).toBe(400);
+		expect(commands.some(args => args[0] === "exec")).toBe(false);
+	});
+
+	it("serves one transcription at a time and cancel frees the slot by killing the exec", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { base, headers } = await startedService();
+			holdExec = true;
+			const held = fetch(base + "/recognize-note", { method: "POST", headers, body: JSON.stringify({ images: [PNG_PIXEL] }) });
+			await untilHeldExec(1);
+			const second = await fetch(base + "/recognize-note", { method: "POST", headers, body: JSON.stringify({ images: [PNG_PIXEL] }) });
+			expect(second.status).toBe(429);
+			const cancelled = await fetch(base + "/cancel", { method: "POST", headers });
+			expect(await cancelled.json()).toEqual({ cancelled: true });
+			expect(heldExec[0]!.kill).toHaveBeenCalled();
+			// The killed exec surfaces as the held request's 500...
+			expect((await held).status).toBe(500);
+			// ...and the single-flight slot is actually free again.
+			holdExec = false;
+			const retry = await fetch(base + "/recognize-note", { method: "POST", headers, body: JSON.stringify({ images: [PNG_PIXEL] }) });
+			expect(retry.status).toBe(200);
+		} finally { logged.mockRestore(); }
+	});
+
+	it("stop kills the in-flight exec and drops its socket instead of orphaning both", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { base, headers } = await startedService();
+			holdExec = true;
+			const held = fetch(base + "/recognize-note", { method: "POST", headers, body: JSON.stringify({ images: [PNG_PIXEL] }) });
+			await untilHeldExec(1);
+			service!.stop();
+			expect(heldExec[0]!.kill).toHaveBeenCalled();
+			// The connection is destroyed rather than left to EXEC_TIMEOUT_MS.
+			await expect(held.then(response => response.text())).rejects.toThrow();
+		} finally { logged.mockRestore(); }
+	});
+
+	it("keeps /cancel behind the access token", async () => {
+		const { base } = await startedService();
+		const denied = await fetch(base + "/cancel", { method: "POST" });
+		expect(denied.status).toBe(401);
 	});
 });

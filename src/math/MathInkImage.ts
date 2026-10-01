@@ -1,4 +1,5 @@
 import type { MathInk } from "./MathRecognition";
+import { MAX_TILES, RENDER_MAX_EDGE_PX, TILE_OVERLAP_PX, TILE_PX } from "./CodexLimits";
 
 export interface InkImageBounds { left: number; top: number; right: number; bottom: number }
 
@@ -27,10 +28,10 @@ export function noteInkImage(ink: MathInk, bounds: InkImageBounds, doc: Document
 export function noteInkTiles(ink: MathInk, bounds: InkImageBounds, doc: Document = document): string[] {
 	const width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
 	if (width <= 0 || height <= 0) throw new Error("Select a visible area of handwriting.");
-	const tile = 1400, overlap = 60, step = tile - overlap;
+	const tile = TILE_PX, overlap = TILE_OVERLAP_PX, step = tile - overlap;
 	const columns = Math.max(1, Math.ceil((width - overlap) / step));
 	const rows = Math.max(1, Math.ceil((height - overlap) / step));
-	if (rows * columns > 8) throw new Error("This area needs more than eight images. Select a smaller part of the note.");
+	if (rows * columns > MAX_TILES) throw new Error("This area needs more than eight images. Select a smaller part of the note.");
 	const images: string[] = [];
 	for (let row = 0; row < rows; row++) for (let column = 0; column < columns; column++) {
 		const left = Math.max(bounds.left, Math.min(bounds.left + column * step, bounds.right - tile));
@@ -46,10 +47,10 @@ function renderInk(ink: MathInk, bounds: InkImageBounds, doc: Document, padding:
 	const width = right - left, height = bottom - top;
 	if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0 ||
 		!Number.isFinite(left) || !Number.isFinite(top)) throw new Error("The selected ink bounds are invalid.");
-	const scale = Math.min(2, 1568 / Math.max(width, height, 1));
+	const scale = Math.min(2, RENDER_MAX_EDGE_PX / Math.max(width, height, 1));
 	const canvas = doc.createElement("canvas");
-	canvas.width = Math.max(1, Math.min(1568, Math.ceil(width * scale)) + padding * 2);
-	canvas.height = Math.max(1, Math.min(1568, Math.ceil(height * scale)) + padding * 2);
+	canvas.width = Math.max(1, Math.min(RENDER_MAX_EDGE_PX, Math.ceil(width * scale)) + padding * 2);
+	canvas.height = Math.max(1, Math.min(RENDER_MAX_EDGE_PX, Math.ceil(height * scale)) + padding * 2);
 	const context = canvas.getContext("2d");
 	if (!context) throw new Error("Could not render the selected handwriting.");
 	context.fillStyle = "white";

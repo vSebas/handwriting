@@ -115,6 +115,20 @@ describe("settings control consistency preserves saved behavior", () => {
 		expect(invalid.settings.codexServiceToken).toBe("");
 		expect(invalid.settings.codexModel).toBe("");
 	});
+	it("enables Codex only for vaults that already carry a service token", async () => {
+		// The codexEnabled key postdates the feature. A vault with a token has
+		// used Codex (desktop writes it back, iPads paste it): those users stay
+		// on through the upgrade. Everyone else - vaults that never touched the
+		// feature, and fresh installs (raw null walks the same absent-key
+		// branch as {}) - starts off, so no service is hosted and no startup
+		// error can appear for users without the Codex CLI.
+		expect((await loadThenSave({ codexServiceToken: "test-token" })).settings.codexEnabled).toBe(true);
+		expect((await loadThenSave({ codexServiceToken: "" })).settings.codexEnabled).toBe(false);
+		expect((await loadThenSave({})).settings.codexEnabled).toBe(false);
+		// An explicit choice always beats the inference, in both directions.
+		expect((await loadThenSave({ codexEnabled: false, codexServiceToken: "test-token" })).settings.codexEnabled).toBe(false);
+		expect((await loadThenSave({ codexEnabled: true })).settings.codexEnabled).toBe(true);
+	});
 	it("presents both color controls as dropdowns and identifies global paper scope", async () => {
 		const plugin = await loadThenSave({});
 		(plugin as unknown as Record<string, unknown>).manifest = { version: "1.5.0" };

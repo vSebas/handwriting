@@ -58,6 +58,15 @@ describe("the background-freeze flush is wired to the events that mean 'frozen'"
 		);
 	});
 
+	// And blur: desktop stays VISIBLE while the user alt-tabs to a terminal
+	// and commits the vault with git - the one moment a mid-debounce sidecar
+	// write must not still be pending, and one neither event above covers.
+	it("window blur drains as well", () => {
+		expect(MAIN, "main.ts no longer registers the blur flush").toContain(
+			'this.registerDomEvent(window, "blur", () => this.flushOnHide());'
+		);
+	});
+
 	it("and what they call still dispatches the pending writes", () => {
 		const at = MAIN.indexOf("private flushOnHide(): void {");
 		expect(at, "flushOnHide is gone from main.ts").toBeGreaterThan(-1);

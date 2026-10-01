@@ -1,5 +1,9 @@
 ﻿# Transcribe handwriting
 
+Turn on **Transcribe handwriting with Codex** in Handwriting settings first:
+the feature is off by default, and its commands and settings only appear
+while it is on.
+
 Use **Transcribe all handwriting in this note** from Obsidian's command palette.
 The dialog shows the note's pen ink as one image. Choose the whole image or
 draw an area, then press **Recognize selection**. The laptop's signed-in Codex
@@ -22,5 +26,5 @@ On iPad, set the laptop service URL to its Wi-Fi address and sync or copy the
 access token. The laptop must remain reachable. The **Transcription model**
 setting shows the laptop's configured Codex model. Keep **Follow laptop** selected
 to use that model, or choose another image-capable model from the dropdown. If the laptop
-has no configured model, the Codex CLI chooses its own default; it is not
-pinned to Sol. **Test connection** shows the laptop model.
+has no configured model, the Codex CLI chooses its own default.
+**Test connection** shows the laptop model.

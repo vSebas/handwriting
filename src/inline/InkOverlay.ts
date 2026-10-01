@@ -1521,6 +1521,11 @@ export class InkOverlayPlugin {
 	private lassoActive = false;
 	private dragFrom: { x: number; y: number } | null = null;
 	private dragTotal: { dx: number; dy: number } | null = null;
+	/** Ids frozen at drag start; the live drag, the op and the rollback all
+	 * act on this one list, never on whatever is selected later. */
+	private dragIds: readonly string[] = [];
+	/** Record identity survives rename and cannot resolve to a replacement note. */
+	private dragHistoryIdentity: symbol | null = null;
 	/** Insert-space gesture: divider world y, or null when no gesture. */
 	private spaceLineY: number | null = null;
 	/** Ids frozen at pen-down; the live drag and the op both use this list. */
@@ -2718,8 +2723,16 @@ export class InkOverlayPlugin {
 	/** Persisted ink arrives lazily; an untouched note costs one cache lookup. */
 	private loadInk(path: string | null): void {
 		if (!path) return;
+		// The admission closure re-answers at adoption time, not now: a warm
+		// record's revalidation may adopt a synced sidecar only while this pane
+		// is still on the same note and quiet (no gesture, no selection). Any
+		// other answer holds the adoption for the poll or the next reopen.
+		const canAdopt = () => {
+			const b = this.reloadBinding();
+			return !!b && b.quiet && b.path === path;
+		};
 		runDetached(
-			inlineInk.ensureLoaded(path).then((changed) => {
+			inlineInk.ensureLoaded(path, canAdopt).then((changed) => {
 				if (this.filePath() === path) {
 					this.mobileTools?.refresh();
 					this.updateHandwritingPageClass();
@@ -9798,6 +9811,9 @@ export class InkOverlayPlugin {
 			bounds &&
 			pointInBBox(w.x, w.y, padBBox(bounds, visualToNote(SELECTION_GRAB_PAD, this.scale)))
 		) {
+			const path = this.filePath();
+			this.dragHistoryIdentity = path ? inlineInk.captureHistoryIdentity(path) : null;
+			this.dragIds = [...this.selection.strokeIds];
 			this.dragFrom = { x: w.x, y: w.y };
 			this.dragTotal = { dx: 0, dy: 0 };
 			return;
@@ -9835,9 +9851,10 @@ export class InkOverlayPlugin {
 			const dx = w.x - this.dragFrom.x;
 			const dy = w.y - this.dragFrom.y;
 			// Live drag only translates coordinates in the store; the history
-			// op is pushed once at release, with the id list frozen there.
+			// op is pushed once at release, acting on the ids frozen at drag
+			// start so move, op and rollback all name one list.
 			const before = this.selectionBounds();
-			inlineInk.moveStrokes(path, this.selection.strokeIds, dx, dy);
+			inlineInk.moveStrokes(path, this.dragIds, dx, dy);
 			this.dragTotal.dx += dx;
 			this.dragTotal.dy += dy;
 			this.dragFrom = w;
@@ -9869,15 +9886,17 @@ export class InkOverlayPlugin {
 	private lassoUp(): void {
 		if (this.dragTotal) {
 			const { dx, dy } = this.dragTotal;
+			const strokeIds = this.dragIds;
 			this.dragFrom = null;
 			this.dragTotal = null;
+			this.dragIds = [];
+			this.dragHistoryIdentity = null;
 			const path = this.filePath();
 			if (path && (dx !== 0 || dy !== 0)) {
-				// The op freezes WHICH strokes moved. An old move must never
-				// later act on whatever happens to be selected.
-				const strokeIds = [...this.selection.strokeIds];
+				// The op acts on the ids frozen at drag start. An old move must
+				// never later act on whatever happens to be selected.
 				inlineInk.save(path);
-				this.dispatchInk({ type: "move", path, strokeIds, dx, dy });
+				this.dispatchInk({ type: "move", path, strokeIds: [...strokeIds], dx, dy });
 				// A move changes no stroke COUNT, so the cache's cheap guard
 				// cannot see it. §5g/G1.
 				this.frontierCache.invalidate(path);
@@ -10350,6 +10369,7 @@ export class InkOverlayPlugin {
 
 	private resetGestureState(): void {
 		this.rollbackSpaceMove();
+		this.rollbackLassoDrag();
 		this.clearSnapPreview();
 		// Lifecycle rule (v0.13.6 fix): every gesture-state reset releases the
 		// stroke frame lock. File switch and unmount reach here mid-stroke;
@@ -10387,8 +10407,8 @@ export class InkOverlayPlugin {
 		this.selection.clear();
 		this.lassoPts = [];
 		this.lassoActive = false;
-		this.dragFrom = null;
-		this.dragTotal = null;
+		// dragFrom/dragTotal/dragIds/dragHistoryIdentity are cleared by
+		// rollbackLassoDrag() at the top of this method, which owns them.
 		this.spaceLineY = null;
 		this.spaceIds = [];
 		this.spaceBounds = null;
@@ -10426,6 +10446,33 @@ export class InkOverlayPlugin {
 		const path=inlineInk.pathForHistoryIdentity(identity);
 		if(!path)return;
 		inlineInk.moveStrokes(path,this.spaceIds,0,-dy);
+		// Persist the restored state even if another save observed the live
+		// provisional coordinates. Store guards still own write eligibility.
+		inlineInk.save(path);
+		this.frontierCache.invalidate(path);
+		this.repaintPath(path);
+	}
+
+	/**
+	 * The lasso twin of `rollbackSpaceMove`, closing the same hole: a drag
+	 * torn down mid-gesture (note switch, unmount, second-finger pinch) has
+	 * already translated the strokes in place, and leaving them there keeps
+	 * the screen showing coordinates no save was ever scheduled for. Rollback
+	 * rather than commit, for the reason the space move chose it: this runs
+	 * AFTER filePath/lastPath changed on a note switch, so a history op
+	 * dispatched here would target the wrong note's history. Restoring the
+	 * pre-drag state needs no op - history already describes it.
+	 */
+	private rollbackLassoDrag(): void {
+		const identity = this.dragHistoryIdentity, total = this.dragTotal, ids = this.dragIds;
+		this.dragHistoryIdentity = null;
+		this.dragIds = [];
+		this.dragFrom = null;
+		this.dragTotal = null;
+		if (!identity || !total || (total.dx === 0 && total.dy === 0) || !ids.length) return;
+		const path = inlineInk.pathForHistoryIdentity(identity);
+		if (!path) return;
+		inlineInk.moveStrokes(path, ids, -total.dx, -total.dy);
 		// Persist the restored state even if another save observed the live
 		// provisional coordinates. Store guards still own write eligibility.
 		inlineInk.save(path);

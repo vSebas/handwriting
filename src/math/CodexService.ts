@@ -1,11 +1,14 @@
 import { requestUrl } from "obsidian";
 import { timerHost } from "../util/RuntimeScheduler";
+import {
+	CLIENT_HEALTH_TIMEOUT_MS, CLIENT_MODELS_TIMEOUT_MS, CLIENT_RECOGNIZE_TIMEOUT_MS, MAX_IMAGES,
+} from "./CodexLimits";
 
 export const DEFAULT_CODEX_URL = "http://127.0.0.1:8765";
 export interface CodexServiceSettings { url: string; token: string; model?: string }
 export interface CodexModelOption { id: string; label: string }
 
-export function codexEndpoint(base: string, path: "recognize-note" | "health" | "models"): string {
+export function codexEndpoint(base: string, path: "recognize-note" | "health" | "models" | "cancel"): string {
 	let url: URL;
 	try { url = new URL(base.trim()); } catch { throw new Error("Enter the laptop service URL in Handwriting settings."); }
 	if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
@@ -25,11 +28,20 @@ async function serviceRequest(settings: CodexServiceSettings, path: "recognize-n
 	let cancel = (): void => {};
 	try {
 		const stopped = new Promise<never>((_, reject) => {
-			cancel = () => reject(new Error("Recognition cancelled."));
+			cancel = () => {
+				reject(new Error("Recognition cancelled."));
+				// requestUrl cannot abort a request it has sent, so the race
+				// above frees only the UI. This frees the LAPTOP: /cancel kills
+				// the running `codex exec` and releases its single-flight slot,
+				// so the next transcription is not met with 429 for minutes.
+				if (path === "recognize-note") void requestUrl({ url: codexEndpoint(settings.url, "cancel"),
+					method: "POST", headers: { Authorization: `Bearer ${token}` }, throw: false }).catch(() => {});
+			};
 			signal.addEventListener("abort", cancel, { once: true });
 			timer = host.setTimeout(() => reject(new Error(path !== "recognize-note"
 				? "The laptop service did not respond. Check that it is ready and reachable."
-				: "Codex took too long. Try a smaller image selection.")), path === "health" ? 10_000 : path === "models" ? 20_000 : 300_000);
+				: "Codex took too long. Try a smaller image selection.")),
+				path === "health" ? CLIENT_HEALTH_TIMEOUT_MS : path === "models" ? CLIENT_MODELS_TIMEOUT_MS : CLIENT_RECOGNIZE_TIMEOUT_MS);
 		});
 		const request = requestUrl({ url, method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}` },
 			contentType: "application/json", body, throw: false }).catch(() => {
@@ -71,7 +83,7 @@ export async function listCodexModels(settings: CodexServiceSettings): Promise<{
 export async function recognizeWholeNoteImages(settings: CodexServiceSettings, images: string[], signal: AbortSignal,
 	progress: (message: string) => void): Promise<string> {
 	if (signal.aborted) throw new Error("Recognition cancelled.");
-	if (!images.length || images.length > 9) throw new Error("Select a smaller handwriting area.");
+	if (!images.length || images.length > MAX_IMAGES) throw new Error("Select a smaller handwriting area.");
 	progress("Sending the selected handwriting image to Codex...");
 	const result = await serviceRequest(settings, "recognize-note", signal,
 		JSON.stringify(settings.model?.trim() ? { images, model: settings.model.trim() } : { images }));

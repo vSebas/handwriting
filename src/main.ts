@@ -4,6 +4,7 @@ import { CodexSelectionModal } from "./math/CodexSelectionModal";
 import { captureWholeNoteInsertionTarget, noteInkSnapshot } from "./math/WholeNoteInk";
 import { checkCodexNote, listCodexModels, recognizeWholeNoteImages, DEFAULT_CODEX_URL } from "./math/CodexService";
 import { LocalCodexService } from "./math/CodexDesktop";
+import { UNPINNED_MODEL_LABEL } from "./math/CodexLimits";
 import {
 	clearGatedCommandAction,
 	clearGatedCommandActions,
@@ -355,6 +356,9 @@ const PDF_INK_CHANGED_DURING_BACKUP =
 	"Handwriting: the ink changed while its backup was being made. nothing was deleted. run Delete all ink again if you still want to remove it.";
 
 interface HandwritingSettings {
+	/** The whole Codex transcription feature: off hosts no bridge, registers
+	 * no transcription commands, and makes no network requests. */
+	codexEnabled: boolean;
 	codexServiceUrl: string;
 	codexServiceToken: string;
 	codexModel: string;
@@ -503,6 +507,7 @@ interface HandwritingSettings {
 }
 
 const DEFAULT_SETTINGS: HandwritingSettings = {
+	codexEnabled: false,
 	codexServiceUrl: DEFAULT_CODEX_URL,
 	codexServiceToken: "",
 	codexModel: "",
@@ -1178,7 +1183,10 @@ export default class HandwritingPlugin extends Plugin {
 		}));
 	}
 	localCodexModelSelection(): { model: string; source: string } {
-		return this.getLocalCodexService().modelSelection();
+		// The service keeps the unpinned state as `model: null`; the settings
+		// UI wants the human label, so the mapping lives at this edge.
+		const selection = this.getLocalCodexService().modelSelection();
+		return { ...selection, model: selection.model ?? UNPINNED_MODEL_LABEL };
 	}
 	async signInToCodex(): Promise<void> {
 		if (!Platform.isDesktopApp) throw new Error("Sign in on the laptop running desktop Obsidian.");
@@ -1193,6 +1201,12 @@ export default class HandwritingPlugin extends Plugin {
 			this.settings.codexServiceToken = token;
 			await this.persistSettings();
 		}
+	}
+	stopLocalCodexService(): void {
+		this.codexService?.stop();
+		// The null-out is load-bearing: stop() is sticky (`stopped` never
+		// resets), so re-enabling the feature must build a fresh instance.
+		this.codexService = null;
 	}
 	store!: PageStore;
 	settings: HandwritingSettings = { ...DEFAULT_SETTINGS };
@@ -2055,10 +2069,13 @@ export default class HandwritingPlugin extends Plugin {
 		};
 		bindRecoveryNotices(this.store, (pageId) => this.noteNameFor(pageId));
 		await this.loadSettings();
-		if (Platform.isDesktopApp && typeof (window as Window & { require?: unknown }).require === "function") {
-			const service = this.getLocalCodexService();
+		if (this.settings.codexEnabled && Platform.isDesktopApp && typeof (window as Window & { require?: unknown }).require === "function") {
+			// Quietly: a startup failure (no Codex CLI, not signed in) surfaces
+			// again at every point of use - both modals and the settings tab's
+			// Test/Sign-in buttons call startLocalCodexService and show the
+			// message there - so a Notice here would only nag every launch.
 			void this.startLocalCodexService().catch(error =>
-				new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not start the Codex service."}`));
+				console.error("[handwriting] Codex service startup failed", error));
 		}
 
 		this.registerView(HANDWRITING_PEN_LAB_VIEW_TYPE, (leaf) => new PenLabView(leaf));
@@ -2084,6 +2101,10 @@ export default class HandwritingPlugin extends Plugin {
 			prepareExternalAdoption: (pageId, outgoing) =>
 				this.store.prepareExternalAdoption(pageId, outgoing),
 			acceptExternalAdoption: (prepared) => this.store.acceptExternalAdoption(prepared),
+			// Reopening a note revalidates its warm record against the disk, so
+			// a sidecar replaced by git/sync while the note was closed is
+			// adopted instead of being overwritten by the session's stale copy.
+			sidecarExternallyChanged: (pageId) => this.store.externallyChanged(pageId),
 			notify: (message) => blockNotice(message),
 		});
 
@@ -3035,6 +3056,7 @@ export default class HandwritingPlugin extends Plugin {
 			id: "recognize-selected-handwriting",
 			name: "Lasso: transcribe handwriting",
 			checkCallback: checking => {
+				if (!this.settings.codexEnabled) return false;
 				const surface = this.activeInkSurface();
 				if (!surface) return false;
 				if (!checking) {
@@ -3075,6 +3097,7 @@ export default class HandwritingPlugin extends Plugin {
 			id: "recognize-note-handwriting",
 			name: "Transcribe all handwriting in this note",
 			checkCallback: checking => {
+				if (!this.settings.codexEnabled) return false;
 				const active = this.app.workspace.activeEditor;
 				const file = active?.file;
 				if (!active?.editor || !file || file.extension.toLowerCase() !== "md") return false;
@@ -3823,6 +3846,10 @@ export default class HandwritingPlugin extends Plugin {
 			if (document.visibilityState === "hidden") this.flushOnHide();
 		});
 		this.registerDomEvent(window, "pagehide", () => this.flushOnHide());
+		// Desktop stays visible while the user alt-tabs to a terminal and
+		// commits the vault - exactly the moment a mid-debounce sidecar write
+		// must not still be pending. flushDispatch is a no-op when idle.
+		this.registerDomEvent(window, "blur", () => this.flushOnHide());
 
 		// ---- foreground repaint (1.4.12 §14) ----------------------------------
 		// The mirror of the flush above, on the way BACK. WebKit reclaims a
@@ -4738,7 +4765,8 @@ export default class HandwritingPlugin extends Plugin {
 		this.wholeNoteModal?.close();
 		this.selectionModal?.close();
 		this.wholeNoteModal = null;
-		this.codexService?.stop();
+		this.selectionModal = null;
+		this.stopLocalCodexService();
 		// First, so that anything still waiting on onLayoutReady finds it set.
 		this.unloaded = true;
 		this.notePaper?.destroy();
@@ -5356,6 +5384,13 @@ export default class HandwritingPlugin extends Plugin {
 		delete (carried as Record<string, unknown>).codexServiceRoot;
 		this.settings = {
 			...carried,
+			// Migration: the key postdates the feature. Desktop writes the token
+			// back after the first successful service start and iPads paste it,
+			// so a non-empty token is the one reliable "this vault already uses
+			// Codex" signal - those users stay on without a reload; everyone
+			// else (fresh installs included) starts with the feature off.
+			codexEnabled: typeof raw?.codexEnabled === "boolean" ? raw.codexEnabled
+				: typeof raw?.codexServiceToken === "string" && raw.codexServiceToken.trim().length > 0,
 			codexServiceUrl: typeof raw?.codexServiceUrl === "string" ? raw.codexServiceUrl : DEFAULT_CODEX_URL,
 			codexServiceToken: typeof raw?.codexServiceToken === "string" ? raw.codexServiceToken : "",
 			codexModel: typeof raw?.codexModel === "string" && /^[A-Za-z0-9._-]*$/.test(raw.codexModel) ? raw.codexModel : "",
@@ -6516,9 +6551,15 @@ export class HandwritingSettingTab extends PluginSettingTab {
 				heading: "Handwriting recognition",
 				items: [
 					{
-						name: "Mixed handwriting with Codex",
-						desc: "Run Transcribe all handwriting in this note. Review the Markdown and LaTeX before inserting or replacing pen ink. The laptop's signed-in Codex CLI reads the selected ink images.",
+						name: "Transcribe handwriting with Codex",
+						desc: "Adds Transcribe all handwriting in this note and Lasso: transcribe handwriting. Review the Markdown and LaTeX before inserting or replacing pen ink. The laptop's signed-in Codex CLI reads the selected ink images; off, Handwriting hosts no service and makes no network requests.",
+						aliases: ["codex", "transcription", "recognition", "ocr", "handwriting recognition"],
+						control: { type: "toggle", key: "codexEnabled" },
 					},
+					// The rest of the group only means something with the feature
+					// on; `getSettingDefinitions` is re-evaluated on every paint,
+					// so the toggle's rerender() adds and removes these rows live.
+					...(!this.plugin.settings.codexEnabled ? [] : ([
 					{
 						name: "Set up Codex recognition",
 						render: setting => { setting.setDesc(createFragment(fragment => {
@@ -6614,6 +6655,7 @@ export class HandwritingSettingTab extends PluginSettingTab {
 							finally { button.setDisabled(false); }
 						})); },
 					},
+					] satisfies SettingDefinitionItem[])),
 				],
 			},
 			{
@@ -6752,6 +6794,19 @@ export class HandwritingSettingTab extends PluginSettingTab {
 				s.inkSmoothing = on;
 				this.plugin.applyBooxMode();
 				repaintAllInkOverlays();
+				break;
+			case "codexEnabled":
+				s.codexEnabled = on;
+				if (on) {
+					// Same quiet contract as the startup path: a failure here
+					// (no CLI, not signed in) reappears with its message on the
+					// Test connection and Sign in buttons this toggle reveals.
+					if (Platform.isDesktopApp) void this.plugin.startLocalCodexService().catch(error =>
+						console.error("[handwriting] Codex service startup failed", error));
+				} else this.plugin.stopLocalCodexService();
+				// The rest of the recognition group exists only while this is
+				// on; same reason booxMode redraws the tab.
+				this.rerender();
 				break;
 			case "booxMode":
 				s.booxMode = on;

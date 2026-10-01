@@ -1,5 +1,10 @@
 /// <reference types="node" />
 import { checkCodexNote, type CodexModelOption } from "./CodexService";
+import {
+	EXEC_TIMEOUT_MS, LOGIN_STATUS_TIMEOUT_MS, LOGIN_TIMEOUT_MS, MAX_BODY_BYTES, MAX_IMAGES,
+	MAX_IMAGE_PIXELS, MAX_TRANSCRIPTION_CHARS, MODEL_LIST_MAX_CHARS, MODEL_LIST_TIMEOUT_MS,
+	UNPINNED_MODEL_LABEL,
+} from "./CodexLimits";
 
 const PROMPT = `Transcribe the attached image(s) of handwritten notes into Obsidian Markdown.
 If multiple images are attached, the first is an overview and the rest are
@@ -13,7 +18,6 @@ than guessing. Do not describe the task, add a preface, or wrap the result in a
 code fence. Do not use tools or access any files beyond the attached image.
 Return only the Markdown transcription.`;
 const PNG_PREFIX = "data:image/png;base64,";
-const MAX_BODY = 12 * 1024 * 1024;
 
 function desktopNode() {
 	const host = window as Window & { require?: (module: string) => unknown };
@@ -38,6 +42,13 @@ export class LocalCodexService {
 	private stopped = false;
 	private active = false;
 	private modelPending: Promise<CodexModelOption[]> | null = null;
+	/** Every child this service spawned and has not yet seen exit, so stop()
+	 * can kill them instead of leaving a four-minute `codex exec` orphaned. */
+	private children = new Set<import("node:child_process").ChildProcess>();
+	/** Kills the `codex exec` currently answering /recognize-note, if any.
+	 * POST /cancel calls it: the killed child exits non-zero, the hanging
+	 * request replies 500, and its `finally` frees the single-flight slot. */
+	private cancelExec: (() => void) | null = null;
 	constructor(private settings: () => LocalCodexSettings) {}
 
 	private binary(): string {
@@ -58,13 +69,15 @@ export class LocalCodexService {
 		return found;
 	}
 
-	private run(binary: string, args: string[], timeout: number, cwd?: string): Promise<number> {
+	private run(binary: string, args: string[], timeout: number, cwd?: string, onSpawn?: (kill: () => void) => void): Promise<number> {
 		const { child, process } = desktopNode();
 		return new Promise((resolve, reject) => {
 			const task = child.spawn(binary, args, { cwd, windowsHide: true, stdio: "ignore", env: { ...process.env } });
+			this.children.add(task);
 			const timer = setTimeout(() => { task.kill(); reject(new Error("Codex timed out.")); }, timeout);
-			task.once("error", error => { clearTimeout(timer); reject(error); });
-			task.once("close", code => { clearTimeout(timer); resolve(code ?? 1); });
+			task.once("error", error => { clearTimeout(timer); this.children.delete(task); reject(error); });
+			task.once("close", code => { clearTimeout(timer); this.children.delete(task); resolve(code ?? 1); });
+			onSpawn?.(() => task.kill());
 		});
 	}
 
@@ -78,6 +91,7 @@ export class LocalCodexService {
 			const task = child.spawn(binary, ["app-server", "--listen", "stdio://"], {
 				windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env },
 			});
+			this.children.add(task);
 			let finished = false;
 			let buffer = "";
 			let requestId = 1;
@@ -88,6 +102,7 @@ export class LocalCodexService {
 				finished = true;
 				clearTimeout(timer);
 				task.kill();
+				this.children.delete(task);
 				if (error) reject(error);
 				else resolve([...models.values()]);
 			};
@@ -97,12 +112,12 @@ export class LocalCodexService {
 				send({ jsonrpc: "2.0", id: requestId, method: "model/list",
 					params: { includeHidden: false, limit: 100, ...(cursor ? { cursor } : {}) } });
 			};
-			const timer = setTimeout(() => finish(new Error("Codex model discovery timed out.")), 15_000);
+			const timer = setTimeout(() => finish(new Error("Codex model discovery timed out.")), MODEL_LIST_TIMEOUT_MS);
 			task.once("error", () => finish(new Error("Could not start Codex model discovery.")));
 			task.once("close", () => finish(new Error("Codex model discovery stopped unexpectedly.")));
 			task.stdout.on("data", (chunk: Buffer) => {
 				buffer += chunk.toString("utf8");
-				if (buffer.length > 2_000_000) return finish(new Error("Codex model list is too large."));
+				if (buffer.length > MODEL_LIST_MAX_CHARS) return finish(new Error("Codex model list is too large."));
 				let newline: number;
 				while ((newline = buffer.indexOf("\n")) >= 0 && !finished) {
 					const line = buffer.slice(0, newline).trim();
@@ -139,7 +154,9 @@ export class LocalCodexService {
 		});
 	}
 
-	modelSelection(requestedModel = ""): { model: string; source: string } {
+	/** `model: null` means unpinned - Codex CLI chooses. Serialization edges
+	 * render it as UNPINNED_MODEL_LABEL; nothing compares against the label. */
+	modelSelection(requestedModel = ""): { model: string | null; source: string } {
 		const override = requestedModel.trim() || this.settings().model.trim();
 		if (override) {
 			if (!/^[A-Za-z0-9._-]+$/.test(override)) throw new Error("Use a Codex model ID containing only letters, numbers, dots, hyphens, or underscores.");
@@ -152,7 +169,7 @@ export class LocalCodexService {
 			const model = /^model\s*=\s*["']([A-Za-z0-9._-]+)["']/m.exec(topLevel)?.[1];
 			if (model) return { model, source: "laptop Codex config" };
 		} catch { /* Codex can still choose its built-in default. */ }
-		return { model: "Codex CLI default (not pinned)", source: "Codex CLI" };
+		return { model: null, source: "Codex CLI" };
 	}
 
 	private async recognize(binary: string, images: string[], requestedModel = ""): Promise<string> {
@@ -168,13 +185,17 @@ export class LocalCodexService {
 				args.push("--image", file);
 			}
 			const { model } = this.modelSelection(requestedModel);
-			if (model !== "Codex CLI default (not pinned)") args.push("--model", model);
+			if (model) args.push("--model", model);
 			args.push("--", PROMPT);
-			if (await this.run(binary, args, 240_000, dir) !== 0) throw new Error("Codex failed.");
+			const code = await this.run(binary, args, EXEC_TIMEOUT_MS, dir, kill => { this.cancelExec = kill; });
+			if (code !== 0) throw new Error("Codex failed.");
 			const markdown = (await fs.promises.readFile(output, "utf8")).trim();
-			if (!markdown || markdown.length > 100_000) throw new Error("Invalid transcription.");
+			if (!markdown || markdown.length > MAX_TRANSCRIPTION_CHARS) throw new Error("Invalid transcription.");
 			return markdown;
-		} finally { await fs.promises.rm(dir, { recursive: true, force: true }); }
+		} finally {
+			this.cancelExec = null;
+			await fs.promises.rm(dir, { recursive: true, force: true });
+		}
 	}
 
 	start(): Promise<string> {
@@ -185,7 +206,7 @@ export class LocalCodexService {
 		if (this.stopped) throw new Error("Codex service startup was cancelled.");
 		const { crypto, http } = desktopNode();
 		const binary = this.binary();
-		if (await this.run(binary, ["login", "status"], 10_000) !== 0) {
+		if (await this.run(binary, ["login", "status"], LOGIN_STATUS_TIMEOUT_MS) !== 0) {
 			throw new Error("Sign in to Codex with ChatGPT on this laptop, then try again.");
 		}
 		const url = new URL(this.settings().url);
@@ -202,46 +223,73 @@ export class LocalCodexService {
 				res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 				res.end(JSON.stringify(value));
 			};
-			if (req.headers.authorization !== `Bearer ${token}`) return reply(401, { error: "Invalid access token." });
-			if (req.method === "GET" && req.url === "/health") return reply(200, { provider: "codex", ready: true, ...this.modelSelection() });
-			if (req.method === "GET" && req.url === "/models") {
-				try { return reply(200, { models: await this.listModels(binary), defaultModel: this.modelSelection().model }); }
-				catch { return reply(503, { error: "Codex model list unavailable. Check the laptop's Codex CLI." }); }
-			}
-			if (req.method !== "POST" || req.url !== "/recognize-note") return reply(404, { error: "Unknown endpoint." });
-			if (this.active) return reply(429, { error: "Recognition already running." });
-			const length = Number(req.headers["content-length"] ?? 0);
-			if (!Number.isInteger(length) || length < 1 || length > MAX_BODY) return reply(413, { error: "Invalid request size." });
-			this.active = true;
+			// Nothing may throw past this frame: an async handler's uncaught
+			// rejection sends no reply at all, and the request hangs until the
+			// client's timeout. /health's modelSelection() did exactly that
+			// when the saved override failed the model-ID check.
 			try {
-				const chunks: Buffer[] = [];
-				let size = 0;
-				for await (const chunk of req) {
-					size += chunk.length;
-					if (size > MAX_BODY) throw new Error("Request too large.");
-					chunks.push(chunk);
+				if (req.headers.authorization !== `Bearer ${token}`) return reply(401, { error: "Invalid access token." });
+				if (req.method === "GET" && req.url === "/health") {
+					const selection = this.modelSelection();
+					return reply(200, { provider: "codex", ready: true, ...selection, model: selection.model ?? UNPINNED_MODEL_LABEL });
 				}
-				const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-				const images = (body as { images?: unknown })?.images;
-				const requestedModel = (body as { model?: unknown })?.model;
-				if (requestedModel !== undefined && (typeof requestedModel !== "string" ||
-					(requestedModel && !/^[A-Za-z0-9._-]+$/.test(requestedModel)))) {
-					return reply(400, { error: "Invalid Codex model ID." });
+				if (req.method === "GET" && req.url === "/models") {
+					try { return reply(200, { models: await this.listModels(binary), defaultModel: this.modelSelection().model ?? UNPINNED_MODEL_LABEL }); }
+					catch { return reply(503, { error: "Codex model list unavailable. Check the laptop's Codex CLI." }); }
 				}
-				if (!Array.isArray(images) || images.length < 1 || images.length > 9 ||
-					images.some(image => typeof image !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(image))) {
-					return reply(400, { error: "Expected one to nine PNG images." });
+				// The iPad's requestUrl cannot abort a request it has sent, so a
+				// cancelled modal frees only its UI; this is how it frees the
+				// laptop. Killing the exec makes the in-flight /recognize-note
+				// reply 500 (to a client no longer listening) and release the
+				// single-flight slot, instead of blocking retries for minutes.
+				if (req.method === "POST" && req.url === "/cancel") {
+					this.cancelExec?.();
+					return reply(200, { cancelled: this.active });
 				}
-				for (const image of images as string[]) {
-					const png = Buffer.from(image.slice(PNG_PREFIX.length), "base64");
-					if (png.length < 24 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" ||
-						png.readUInt32BE(16) * png.readUInt32BE(20) > 8_000_000) {
-						return reply(400, { error: "Invalid or oversized PNG image." });
+				if (req.method !== "POST" || req.url !== "/recognize-note") return reply(404, { error: "Unknown endpoint." });
+				if (this.active) return reply(429, { error: "Recognition already running." });
+				const length = Number(req.headers["content-length"] ?? 0);
+				if (!Number.isInteger(length) || length < 1 || length > MAX_BODY_BYTES) return reply(413, { error: "Invalid request size." });
+				this.active = true;
+				try {
+					const chunks: Buffer[] = [];
+					let size = 0;
+					for await (const chunk of req) {
+						size += chunk.length;
+						if (size > MAX_BODY_BYTES) throw new Error("Request too large.");
+						chunks.push(chunk);
 					}
+					const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+					const images = (body as { images?: unknown })?.images;
+					const requestedModel = (body as { model?: unknown })?.model;
+					if (requestedModel !== undefined && (typeof requestedModel !== "string" ||
+						(requestedModel && !/^[A-Za-z0-9._-]+$/.test(requestedModel)))) {
+						return reply(400, { error: "Invalid Codex model ID." });
+					}
+					if (!Array.isArray(images) || images.length < 1 || images.length > MAX_IMAGES ||
+						images.some(image => typeof image !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(image))) {
+						return reply(400, { error: "Expected one to nine PNG images." });
+					}
+					for (const image of images as string[]) {
+						const png = Buffer.from(image.slice(PNG_PREFIX.length), "base64");
+						if (png.length < 24 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" ||
+							png.readUInt32BE(16) * png.readUInt32BE(20) > MAX_IMAGE_PIXELS) {
+							return reply(400, { error: "Invalid or oversized PNG image." });
+						}
+					}
+					reply(200, { markdown: await this.recognize(binary, images as string[], requestedModel as string | undefined) });
+				} catch (error) {
+					// The wire gets the generic sentence; the real cause goes to
+					// the console, or a failed transcription is undebuggable.
+					console.error("[handwriting] Codex recognition failed", error);
+					reply(500, { error: "Codex recognition failed. Check sign-in and model access." });
 				}
-				reply(200, { markdown: await this.recognize(binary, images as string[], requestedModel as string | undefined) });
-			} catch { reply(500, { error: "Codex recognition failed. Check sign-in and model access." }); }
-			finally { this.active = false; }
+				finally { this.active = false; }
+			} catch (error) {
+				console.error("[handwriting] Codex bridge request failed", error);
+				if (!res.headersSent) reply(500, { error: "Codex request failed." });
+				else res.end();
+			}
 		});
 		try {
 			await new Promise<void>((resolve, reject) => {
@@ -256,13 +304,23 @@ export class LocalCodexService {
 
 	async signIn(): Promise<void> {
 		const binary = this.binary();
-		if (await this.run(binary, ["login", "status"], 10_000) === 0) return;
-		if (await this.run(binary, ["login"], 300_000) !== 0) throw new Error("Codex sign-in did not complete.");
-		if (await this.run(binary, ["login", "status"], 10_000) !== 0) throw new Error("Codex sign-in could not be verified.");
+		if (await this.run(binary, ["login", "status"], LOGIN_STATUS_TIMEOUT_MS) === 0) return;
+		if (await this.run(binary, ["login"], LOGIN_TIMEOUT_MS) !== 0) throw new Error("Codex sign-in did not complete.");
+		if (await this.run(binary, ["login", "status"], LOGIN_STATUS_TIMEOUT_MS) !== 0) throw new Error("Codex sign-in could not be verified.");
 	}
 
 	stop(): void {
 		this.stopped = true;
+		// Children first: an orphaned `codex exec` would otherwise keep working
+		// (and holding the GPU/account slot) for up to EXEC_TIMEOUT_MS after
+		// the plugin unloaded. Killing them also unblocks any request handler
+		// awaiting run(), so the server can actually finish closing.
+		for (const task of this.children) task.kill();
+		this.children.clear();
+		// close() alone waits for in-flight requests that will now never
+		// finish; closeAllConnections (Node >= 18.2, Obsidian ships Node 20)
+		// drops their sockets too.
+		this.server?.closeAllConnections?.();
 		this.server?.close();
 		this.server = null;
 		this.serverToken = null;

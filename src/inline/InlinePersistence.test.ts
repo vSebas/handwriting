@@ -7,7 +7,11 @@
  *       after the persisted state is adopted; no save ever contains only the
  *       in-memory mutation while omitting strokes already on disk;
  *   H3  first-stroke identity claims are tracked, the first write after a
- *       claim is immediate, and settle() waits for claims and their writes.
+ *       claim is immediate, and settle() waits for claims and their writes;
+ *   R1  reopening a note revalidates a warm record against the disk, so a
+ *       sidecar replaced by git/sync while the note was closed is adopted
+ *       instead of being overwritten (and demoted to a conflict file) by the
+ *       session's stale copy.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,6 +59,21 @@ function serialize(id: string, strokeIds: string[]): string {
 	});
 }
 
+/** Like `serialize`, but each stroke carries its own x — a moved revision. */
+function serializeAt(id: string, entries: Array<[string, number]>): string {
+	const p = emptyPage(id);
+	p.surface = "inline";
+	p.strokes = entries.map(([s, x]) => stroke(s, x));
+	return JSON.stringify({
+		schemaVersion: 1,
+		pageId: p.pageId,
+		surface: p.surface,
+		textBoxes: [],
+		images: [],
+		strokes: p.strokes,
+	});
+}
+
 function idsOnDisk(fake: FakeAdapter): string[] | null {
 	const text = fake.files.get(FINAL);
 	if (text === undefined) return null;
@@ -76,6 +95,8 @@ function rig(opts: {
 	holdLoad?: boolean;
 	holdClaim?: boolean;
 	claimFails?: () => boolean;
+	/** Wire the adoption trio, so warm-record revalidation can run (R1). */
+	adoption?: boolean;
 }): Rig {
 	const fake = new FakeAdapter();
 	const store = new PageStore({ vault: { adapter: fake } });
@@ -109,6 +130,12 @@ function rig(opts: {
 		scheduleSidecarNow: (id, page) => store.saveNow(id, page),
 		notify: (m) => r.notices.push(m),
 	};
+	if (opts.adoption) {
+		host.prepareExternalAdoption = (id, outgoing) =>
+			store.prepareExternalAdoption(id, outgoing);
+		host.acceptExternalAdoption = (prepared) => store.acceptExternalAdoption(prepared);
+		host.sidecarExternallyChanged = (id) => store.externallyChanged(id);
+	}
 	r.ink.attachHost(host);
 	return r;
 }
@@ -341,5 +368,86 @@ describe("H3 — first-stroke claim window", () => {
 		await waiting;
 		expect(settled).toBe(true);
 		expect(t.fake.writeAttempts).toBe(0); // and still no write without an id
+	});
+});
+
+describe("R1 — warm-record revalidation on reopen", () => {
+	it("a warm record adopts an externally moved sidecar on reopen", async () => {
+		const t = rig({ idInCache: PID, adoption: true });
+		t.fake.externalWrite(FINAL, serialize(PID, ["A"]));
+		await t.ink.ensureLoaded(NOTE); // cold load establishes the baseline
+		// Another device moves A; git replaces the file while the note is closed.
+		t.fake.externalWrite(FINAL, serializeAt(PID, [["A", 60]]));
+		const changed = await t.ink.ensureLoaded(NOTE, () => true);
+		expect(changed).toBe(true);
+		expect(t.ink.strokes(NOTE)[0]?.points[0]?.x).toBe(60);
+	});
+
+	it("a stroke this session itself moved earlier still adopts the incoming geometry", async () => {
+		const t = rig({ idInCache: PID, adoption: true });
+		t.fake.externalWrite(FINAL, serialize(PID, ["A"]));
+		await t.ink.ensureLoaded(NOTE);
+		// A local move pins A into localStrokeIds; its write lands.
+		t.ink.moveStrokes(NOTE, ["A"], 5, 0);
+		t.ink.save(NOTE);
+		await pastEveryTimer();
+		// The other device's later move arrives.
+		t.fake.externalWrite(FINAL, serializeAt(PID, [["A", 60]]));
+		const changed = await t.ink.ensureLoaded(NOTE, () => true);
+		expect(changed).toBe(true);
+		expect(t.ink.strokes(NOTE)[0]?.points[0]?.x).toBe(60);
+	});
+
+	it("revalidation holds while this session's own write is queued", async () => {
+		const t = rig({ idInCache: PID, adoption: true });
+		t.fake.externalWrite(FINAL, serialize(PID, ["A"]));
+		await t.ink.ensureLoaded(NOTE);
+		t.ink.commit(NOTE, stroke("B")); // queues a write behind the debounce
+		await vi.advanceTimersByTimeAsync(0);
+		t.fake.externalWrite(FINAL, serializeAt(PID, [["A", 60]]));
+		const changed = await t.ink.ensureLoaded(NOTE, () => true);
+		expect(changed).toBe(false);
+		expect(t.ink.strokes(NOTE).map((s) => s.id)).toEqual(["A", "B"]);
+		expect(t.ink.strokes(NOTE)[0]?.points[0]?.x).toBe(10);
+	});
+
+	it("revalidation holds when the caller's admission answers false", async () => {
+		const t = rig({ idInCache: PID, adoption: true });
+		t.fake.externalWrite(FINAL, serialize(PID, ["A"]));
+		await t.ink.ensureLoaded(NOTE);
+		t.fake.externalWrite(FINAL, serializeAt(PID, [["A", 60]]));
+		const changed = await t.ink.ensureLoaded(NOTE, () => false);
+		expect(changed).toBe(false);
+		expect(t.ink.strokes(NOTE)[0]?.points[0]?.x).toBe(10);
+	});
+
+	it("a host without the adoption trio keeps today's behaviour exactly", async () => {
+		const t = rig({ idInCache: PID });
+		t.fake.externalWrite(FINAL, serialize(PID, ["A"]));
+		await t.ink.ensureLoaded(NOTE);
+		t.fake.externalWrite(FINAL, serializeAt(PID, [["A", 60]]));
+		const changed = await t.ink.ensureLoaded(NOTE, () => true);
+		expect(changed).toBe(false);
+		expect(t.ink.strokes(NOTE)[0]?.points[0]?.x).toBe(10);
+	});
+
+	it("decisive: a reopened device does not demote the pulled move to a conflict file", async () => {
+		const t = rig({ idInCache: PID, adoption: true });
+		t.fake.externalWrite(FINAL, serialize(PID, ["A"]));
+		await t.ink.ensureLoaded(NOTE);
+		// The pulled revision carries the other device's move.
+		t.fake.externalWrite(FINAL, serializeAt(PID, [["A", 60]]));
+		await t.ink.ensureLoaded(NOTE, () => true);
+		// Writing immediately after the reopen must build on the adopted page.
+		t.ink.commit(NOTE, stroke("B"));
+		await pastEveryTimer();
+		const onDisk = parsePage(t.fake.files.get(FINAL)!, PID).data.strokes;
+		expect(onDisk.map((s) => s.id)).toEqual(["A", "B"]);
+		expect(onDisk[0]?.points[0]?.x).toBe(60);
+		// The adoption's own preservation pair (conflict-external-*-outgoing/
+		// incoming) is expected; the write-path DEMOTION (`conflict-<mtime>`)
+		// is the loss this guards against.
+		const demoted = [...t.fake.files.keys()].filter((p) => /conflict-\d/.test(p));
+		expect(demoted).toEqual([]);
 	});
 });

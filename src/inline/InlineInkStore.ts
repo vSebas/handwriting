@@ -65,6 +65,14 @@ export interface InlineInkHost {
 	 */
 	prepareExternalAdoption?(pageId: string, outgoing: PageData): Promise<ExternalAdoptionPrep>;
 	acceptExternalAdoption?(prepared: PreparedExternalAdoption): void;
+	/**
+	 * Has this page's sidecar changed on disk behind the session? Cheap
+	 * (stat-first) and false while this session's own write is queued.
+	 *
+	 * OPTIONAL: a host without it gets no reopen revalidation, which is
+	 * exactly today's behaviour and what the headless suites rely on.
+	 */
+	sidecarExternallyChanged?(pageId: string): Promise<boolean>;
 	notify(message: string): void;
 }
 
@@ -520,16 +528,51 @@ export class InlineInkStore {
 	 *
 	 * An untouched note costs exactly one metadata lookup: no id → no sidecar
 	 * can exist (they are keyed by id) → zero file I/O, zero writes.
+	 *
+	 * A warm record is not simply trusted: `canAdopt` lets the caller opt into
+	 * revalidating it against the disk, because git or a sync client can
+	 * replace the sidecar while the note is closed, and the record cache never
+	 * evicts. Without revalidation the reopened note shows the session's stale
+	 * copy and the next save demotes the synced revision to a conflict file.
 	 */
-	async ensureLoaded(path: string): Promise<boolean> {
+	async ensureLoaded(path: string, canAdopt?: () => boolean): Promise<boolean> {
 		const rec = this.record(path);
 		if (!this.host) return false;
 		// Every viewer waiting on this read needs its completion result. Returning
 		// false while loading leaves a joining editor blank until another repaint.
 		if (rec.load === "loading") return rec.loadInFlight ?? false;
 		if (rec.load === "yes" && rec.damagedLocked) return this.retryDamaged(rec);
+		if (rec.load === "yes") return this.revalidate(path, rec, canAdopt);
 		if (rec.load !== "no") return false;
 		return this.loadRecord(path, rec);
+	}
+
+	/**
+	 * Re-check a warm record against the disk and adopt an external change.
+	 *
+	 * Everything unsafe holds: no host capability, no caller admission, an
+	 * unsettled or locked record, or a disk that has not moved. The adoption
+	 * itself goes through `adoptExternal`, which preserves both revisions as
+	 * recoverable siblings before swapping and re-proves every qualification
+	 * after its awaits - so the worst a race can cost is a hold, retried by
+	 * the poll (open pane) or the next reopen (closed note).
+	 */
+	private async revalidate(
+		path: string,
+		rec: NoteRecord,
+		canAdopt?: () => boolean
+	): Promise<boolean> {
+		const host = this.host;
+		const changed = host?.sidecarExternallyChanged;
+		if (!host || !changed || !canAdopt) return false;
+		if (!rec.pageId) return false;
+		if (rec.loadInFlight || rec.claimInFlight || rec.reloading) return false;
+		if (rec.damagedLocked || rec.legacyLocked || rec.futureLocked || rec.duplicateLocked) {
+			return false;
+		}
+		if (!(await changed.call(host, rec.pageId))) return false;
+		const adopted = await this.adoptExternal(path, canAdopt);
+		return adopted.outcome === "adopted" && adopted.changed;
 	}
 
 	/** Complete adoption or fallback restoration before releasing waiting viewers. */

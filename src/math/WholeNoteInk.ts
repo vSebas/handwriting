@@ -1,7 +1,9 @@
+import type { Editor, TFile } from "obsidian";
 import type { InkStroke } from "../ink/Stroke";
 import type { MathInk, TracePoint } from "./MathRecognition";
-import type { MathEditor } from "./MathInsertionTarget";
 import { inkImageBounds, type InkImageBounds } from "./MathInkImage";
+
+export interface MathEditor { editor?: Editor; file: TFile | null }
 
 export interface NotePlacementAnchor { offset: number; y: number; label: string }
 export interface NoteStrokeSnapshot {
@@ -160,30 +162,6 @@ export function captureWholeNoteInsertionTarget(active: MathEditor, current: () 
 			const position = editor.offsetToPos(at);
 			editor.replaceRange(prefix + values.join("\n\n") + suffix, position, position);
 		}
-		inserted = true;
-	};
-}
-
-/** Append only. The original Markdown prefix, including image links, is byte-for-byte intact. */
-export function appendTranscription(original: string, markdown: string): string {
-	const result = markdown.replace(/\r\n?/g, "\n").trim();
-	if (!result || result.length > 100_000) throw new Error("Review a nonempty transcription under 100,000 characters.");
-	return original + (original ? original.endsWith("\n") ? "\n" : "\n\n" : "") + "## Handwriting transcription\n\n" + result + "\n";
-}
-
-/** Append at the current end of the same editor, even if its body changed while OCR ran. */
-export function captureWholeNoteTarget(active: MathEditor, current: () => MathEditor | null): (markdown: string) => void {
-	const editor = active.editor, file = active.file;
-	if (!editor || !file) throw new Error("Open a Markdown editor to append the transcription.");
-	let inserted = false;
-	return markdown => {
-		if (inserted) throw new Error("This transcription has already been appended.");
-		const now = current();
-		if (now?.editor !== editor || now.file !== file) throw new Error("Return to the original note before appending, or copy the transcription.");
-		const original = editor.getValue();
-		const suffix = appendTranscription(original, markdown).slice(original.length);
-		const end = editor.offsetToPos(original.length);
-		editor.replaceRange(suffix, end, end);
 		inserted = true;
 	};
 }
