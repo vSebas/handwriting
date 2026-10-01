@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { InkStroke } from "../ink/Stroke";
-import type { MathEditor } from "./MathInsertionTarget";
-import { appendTranscription, captureWholeNoteInsertionTarget, captureWholeNoteTarget, imageSelectionBounds,
-	markdownBlockAnchors, noteInkSections, noteInkSnapshot } from "./WholeNoteInk";
+import { captureWholeNoteInsertionTarget, imageSelectionBounds,
+	markdownBlockAnchors, noteInkSections, noteInkSnapshot, type MathEditor } from "./WholeNoteInk";
 
 function stroke(id: string, x: number, y: number, tool: "pen" | "highlighter" = "pen"): InkStroke {
 	return { id, tool, color: "black", width: 2, createdAt: Number(id.replace(/\D/g, "")) || 1,
@@ -78,36 +77,5 @@ describe("whole-note ink transcription", () => {
 		const insert = captureWholeNoteInsertionTarget(active, () => active);
 		body = "Changed";
 		expect(() => insert([{ markdown: "new", offset: 0 }], "sections", "new")).toThrow("changed");
-	});
-	it("never changes existing Markdown, pasted images, or their paths", () => {
-		const original = "# Notes\n\nExisting paragraph.\n\n![[Pasted image 2026.png]]\n";
-		const updated = appendTranscription(original, "Text\n\n$$\nx^2\n$$");
-		expect(updated.startsWith(original)).toBe(true);
-		expect(updated.slice(original.length)).toBe("\n## Handwriting transcription\n\nText\n\n$$\nx^2\n$$\n");
-	});
-	it("appends through the same active editor at the current end without replacing a selection", () => {
-		let body = "![[image.png]]\n";
-		let edit: { text: string; from: number; to: number } | undefined;
-		const file = {} as MathEditor["file"];
-		const editor = { getValue: () => body, offsetToPos: (offset: number) => ({ line: 0, ch: offset }),
-			replaceRange: (text: string, from: { ch: number }, to: { ch: number }) => {
-				edit = { text, from: from.ch, to: to.ch };
-				body = body.slice(0, from.ch) + text + body.slice(to.ch);
-			} } as unknown as NonNullable<MathEditor["editor"]>;
-		const active = { editor, file };
-		const append = captureWholeNoteTarget(active, () => active);
-		body += "New typing\n";
-		append("recognized text");
-		expect(edit?.from).toBe("![[image.png]]\nNew typing\n".length);
-		expect(edit?.to).toBe(edit?.from);
-		expect(body).toContain("![[image.png]]\nNew typing\n\n## Handwriting transcription");
-		expect(() => append("again")).toThrow("already been appended");
-	});
-	it("refuses changing the target note and empty results", () => {
-		expect(() => appendTranscription("x", "  ")).toThrow("nonempty");
-		const editor = {} as NonNullable<MathEditor["editor"]>;
-		const file = {} as MathEditor["file"];
-		const append = captureWholeNoteTarget({ editor, file }, () => null);
-		expect(() => append("text")).toThrow("original note");
 	});
 });
