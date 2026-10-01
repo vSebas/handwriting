@@ -4,6 +4,7 @@ import { CodexSelectionModal } from "./math/CodexSelectionModal";
 import { captureWholeNoteInsertionTarget, noteInkSnapshot } from "./math/WholeNoteInk";
 import { checkCodexNote, listCodexModels, recognizeWholeNoteImages, DEFAULT_CODEX_URL } from "./math/CodexService";
 import { LocalCodexService } from "./math/CodexDesktop";
+import { UNPINNED_MODEL_LABEL } from "./math/CodexLimits";
 import {
 	clearGatedCommandAction,
 	clearGatedCommandActions,
@@ -1178,7 +1179,10 @@ export default class HandwritingPlugin extends Plugin {
 		}));
 	}
 	localCodexModelSelection(): { model: string; source: string } {
-		return this.getLocalCodexService().modelSelection();
+		// The service keeps the unpinned state as `model: null`; the settings
+		// UI wants the human label, so the mapping lives at this edge.
+		const selection = this.getLocalCodexService().modelSelection();
+		return { ...selection, model: selection.model ?? UNPINNED_MODEL_LABEL };
 	}
 	async signInToCodex(): Promise<void> {
 		if (!Platform.isDesktopApp) throw new Error("Sign in on the laptop running desktop Obsidian.");
