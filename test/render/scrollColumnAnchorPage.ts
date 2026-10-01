@@ -316,7 +316,7 @@ async function mount(tag: string, readable: boolean, infiniteCanvas = false, lis
 	// `max(bbox.x + bbox.width)` over the stroke list in NOTE-SURFACE space - not client px, and not
 	// relative to the column's left edge. Writing the bbox directly is the only way to state the
 	// frontier a cell is exercising, so the cell can print the number it planted.
-	const seedInk = (globalThis as any).__HW_FAMILYC?.inkBbox as { frontier: number; strokeWidth?: number } | undefined;
+	const seedInk = (globalThis as any).__HW_FAMILYC?.inkBbox as { frontier: number; strokeWidth?: number; color?: string } | undefined;
 	if (seedInk) {
 		// STROKES A HAND COULD HAVE MADE. The frontier is `max(bbox.x + bbox.width)`, so it can be put
 		// anywhere by writing one enormous bbox - and a cell that does that asserts against ink no pen
@@ -332,7 +332,9 @@ async function mount(tag: string, readable: boolean, infiniteCanvas = false, lis
 			const box = { x: x + w > seedInk.frontier - w ? seedInk.frontier - w : x, y: 110 + (i % 3) * 60, width: w, height: 34 };
 			seededInkBoxes.push(box);
 			page.strokes.push({
-				id: `family-c-seed-${i}`, tool: "pen", color: "#000000", width: 2, createdAt: i,
+				// A cell may pick a colour the page's own text cannot produce, so
+				// a pixel detector can tell ink from glyphs.
+				id: `family-c-seed-${i}`, tool: "pen", color: seedInk.color ?? "#000000", width: 2, createdAt: i,
 				points: Array.from({ length: 12 }, (_, j) => ({ x: box.x + (j / 11) * w, y: box.y + 17 + Math.sin(j) * 8, pressure: 0.5, t: i * 400 + j * 9 })),
 				bbox: box,
 			});
@@ -5267,8 +5269,8 @@ async function runTearUpdateCarry(cx: number, cy: number) {
  * a pen contact does before the end arrives, lifts through the real penUp,
  * and records every commitCameraScale call with the lock state it met.
  */
-async function runTearLockedSettle(cx: number, cy: number) {
-	await runTearMount(1, 0, null, true, { fx: 0.5, fy: 0.5 });
+async function runTearLockedSettle(cx: number, cy: number, endSpread = 450, lock = true, mount = true) {
+	if (mount) await runTearMount(1, 0, null, true, { fx: 0.5, fy: 0.5 });
 	const rig = tearRig!; const overlay = rig.overlay as any; const router = overlay.router;
 	const commits: { scale: number; committed: boolean; locked: boolean }[] = [];
 	const commit = overlay.commitCameraScale;
@@ -5281,10 +5283,10 @@ async function runTearLockedSettle(cx: number, cy: number) {
 	const setTouch = (spread: number) => { router.touchPos.set(861, { x: cx - spread / 2, y: cy }); router.touchPos.set(862, { x: cx + spread / 2, y: cy }); };
 	const ev = (type: string) => new PointerEvent(type, { pointerId: 862, pointerType: "touch" });
 	setTouch(300); router.beginPinch(ev("pointerdown"));
-	for (let i = 1; i <= 8; i++) { setTouch(300 + 150 * i / 8); router.updatePinch(ev("pointermove")); await frame(); }
+	for (let i = 1; i <= 8; i++) { setTouch(300 + (endSpread - 300) * i / 8); router.updatePinch(ev("pointermove")); await frame(); }
 	// The pen lands before the end reaches the overlay. frame.begin() is the
 	// whole effect a pen-down has on the lock (StrokeFrame.ts).
-	overlay.frame.begin();
+	if (lock) overlay.frame.begin();
 	router.endPinch(ev("pointerup"), { x: cx, y: cy });
 	router.touchPos.clear();
 	await settle(10); await new Promise(res => setTimeout(res, 350)); await settle(6);
@@ -5294,12 +5296,14 @@ async function runTearLockedSettle(cx: number, cy: number) {
 		landed: commits.filter(c => c.committed).length,
 	};
 	// The real pen lift entry: the same method the router's onPenUp calls.
-	overlay.penUp();
+	if (lock) overlay.penUp();
 	await settle(10); await new Promise(res => setTimeout(res, 350)); await settle(6);
 	return { whileLocked, afterLift: {
 		scaleNow: overlay.pinchScaleNow as number,
 		rasterScale: overlay.pinchRasterScale as number,
 		landed: commits.filter(c => c.committed).map(c => c.scale),
+		refusedUnlocked: commits.filter(c => !c.locked && !c.committed).length,
+		owed: !!overlay.pinchSettleOwed,
 		preview: !!overlay.pinchPreview,
 	} };
 }
