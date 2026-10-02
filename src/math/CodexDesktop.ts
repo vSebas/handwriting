@@ -49,6 +49,12 @@ export class LocalCodexService {
 	 * POST /cancel calls it: the killed child exits non-zero, the hanging
 	 * request replies 500, and its `finally` frees the single-flight slot. */
 	private cancelExec: (() => void) | null = null;
+	/** A /cancel that landed BEFORE the exec spawned - during body upload,
+	 * validation or temp-file writes, when cancelExec is still null. Without
+	 * it that cancel was a no-op the handler still answered cancelled:true
+	 * to, and the exec then ran its full clock while every retry met 429
+	 * (review finding, 2026-10-01). Consumed where the spawn would happen. */
+	private cancelPending = false;
 	constructor(private settings: () => LocalCodexSettings) {}
 
 	private binary(): string {
@@ -187,6 +193,9 @@ export class LocalCodexService {
 			const { model } = this.modelSelection(requestedModel);
 			if (model) args.push("--model", model);
 			args.push("--", PROMPT);
+			// A cancel that raced the upload is honoured here, where the spawn
+			// it meant to kill would otherwise begin.
+			if (this.cancelPending) { this.cancelPending = false; throw new Error("Recognition cancelled."); }
 			const code = await this.run(binary, args, EXEC_TIMEOUT_MS, dir, kill => { this.cancelExec = kill; });
 			if (code !== 0) throw new Error("Codex failed.");
 			const markdown = (await fs.promises.readFile(output, "utf8")).trim();
@@ -218,6 +227,12 @@ export class LocalCodexService {
 		if (this.server) return this.serverToken!;
 		try { await checkCodexNote({ url: `http://127.0.0.1:${port}`, token }); return token; }
 		catch { /* No compatible local server is running. */ }
+		// Re-checked AFTER the awaits above, not only at entry: a stop()
+		// landing between the login probe and the listen used to let the rest
+		// of this method bind the port and assign a server onto an instance
+		// main.ts had already discarded - a bearer-token listener on 0.0.0.0
+		// nothing could ever close (review finding, 2026-10-01).
+		if (this.stopped) throw new Error("Codex service startup was cancelled.");
 		const server = http.createServer(async (req, res) => {
 			const reply = (status: number, value: Record<string, unknown>) => {
 				res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -243,7 +258,10 @@ export class LocalCodexService {
 				// reply 500 (to a client no longer listening) and release the
 				// single-flight slot, instead of blocking retries for minutes.
 				if (req.method === "POST" && req.url === "/cancel") {
-					this.cancelExec?.();
+					if (this.cancelExec) this.cancelExec();
+					// Before the spawn there is no child to kill: the flag makes
+					// recognize() throw at the point the exec would begin.
+					else if (this.active) this.cancelPending = true;
 					return reply(200, { cancelled: this.active });
 				}
 				if (req.method !== "POST" || req.url !== "/recognize-note") return reply(404, { error: "Unknown endpoint." });
@@ -251,6 +269,9 @@ export class LocalCodexService {
 				const length = Number(req.headers["content-length"] ?? 0);
 				if (!Number.isInteger(length) || length < 1 || length > MAX_BODY_BYTES) return reply(413, { error: "Invalid request size." });
 				this.active = true;
+				// A stale flag from a cancel that arrived AFTER the previous
+				// request already failed must not kill this fresh one.
+				this.cancelPending = false;
 				try {
 					const chunks: Buffer[] = [];
 					let size = 0;
@@ -296,6 +317,9 @@ export class LocalCodexService {
 				server.once("error", reject);
 				server.listen(port, "0.0.0.0", () => { server.off("error", reject); resolve(); });
 			});
+			// The same stop() race, one await later: the listen succeeded, but
+			// an instance stop() has disowned must not keep the port.
+			if (this.stopped) { server.close(); throw new Error("Codex service startup was cancelled."); }
 			this.server = server;
 			this.serverToken = token;
 			return token;

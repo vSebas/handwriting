@@ -99,7 +99,9 @@ async function loadThenSave(raw: unknown): Promise<Harness> {
 describe("settings control consistency preserves saved behavior", () => {
 	it("stores the desktop service token for synced plugin settings", async () => {
 		ensureDocument();
-		const plugin = fakePlugin({ codexServiceToken: "" });
+		// Enabled explicitly: startLocalCodexService now refuses when the
+		// feature is off, and this test is about the token write-back.
+		const plugin = fakePlugin({ codexEnabled: true, codexServiceToken: "" });
 		await proto.loadSettings.call(plugin);
 		(plugin as unknown as Record<string, unknown>).codexService = { start: async () => "generated-token-at-least-24-characters" };
 		await (plugin as unknown as { startLocalCodexService(): Promise<void> }).startLocalCodexService();
@@ -115,19 +117,21 @@ describe("settings control consistency preserves saved behavior", () => {
 		expect(invalid.settings.codexServiceToken).toBe("");
 		expect(invalid.settings.codexModel).toBe("");
 	});
-	it("enables Codex only for vaults that already carry a service token", async () => {
-		// The codexEnabled key postdates the feature. A vault with a token has
-		// used Codex (desktop writes it back, iPads paste it): those users stay
-		// on through the upgrade. Everyone else - vaults that never touched the
-		// feature, and fresh installs (raw null walks the same absent-key
-		// branch as {}) - starts off, so no service is hosted and no startup
-		// error can appear for users without the Codex CLI.
-		expect((await loadThenSave({ codexServiceToken: "test-token" })).settings.codexEnabled).toBe(true);
+	it("enables Codex only for an explicit stored opt-in", async () => {
+		// A stored token is NOT an opt-in signal: the pre-gate builds persisted
+		// a generated token on every desktop vault whose user merely had a
+		// signed-in Codex CLI, so inferring from it kept those users silently
+		// hosting the bridge against the off-by-default promise (review
+		// finding, 2026-10-01). Only the stored boolean itself turns it on;
+		// a vault that upgraded through a token-migrating build keeps its
+		// persisted true, and everyone else flips the toggle once.
+		expect((await loadThenSave({ codexServiceToken: "test-token" })).settings.codexEnabled).toBe(false);
 		expect((await loadThenSave({ codexServiceToken: "" })).settings.codexEnabled).toBe(false);
 		expect((await loadThenSave({})).settings.codexEnabled).toBe(false);
-		// An explicit choice always beats the inference, in both directions.
 		expect((await loadThenSave({ codexEnabled: false, codexServiceToken: "test-token" })).settings.codexEnabled).toBe(false);
 		expect((await loadThenSave({ codexEnabled: true })).settings.codexEnabled).toBe(true);
+		// A rotten value is normalised, never trusted.
+		expect((await loadThenSave({ codexEnabled: "yes" })).settings.codexEnabled).toBe(false);
 	});
 	it("presents both color controls as dropdowns and identifies global paper scope", async () => {
 		const plugin = await loadThenSave({});

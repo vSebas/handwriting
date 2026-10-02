@@ -5308,12 +5308,6 @@ async function runTearLockedSettle(cx: number, cy: number, endSpread = 450, lock
 	} };
 }
 
-/** Model iOS WebKit on the desk: no CSS zoom support, so the overlay takes
- * the transform-host path - counter-scaled canvas boxes under 100% included. */
-function runTearForceNoHostZoom(): void {
-	(tearRig!.overlay as any).hostZoomSupport = false;
-}
-
 /**
  * Model the iPadOS engine the 2026-10-01 device trace exposed: CSS zoom
  * parses, computed style echoes it, the page visibly scales - but
@@ -5345,7 +5339,7 @@ function runTearHostState() {
 		cssScale: overlay.cssScale as number, pinchScaleNow: overlay.pinchScaleNow as number };
 }
 
-(window as any).scrollColumnAnchor = { setScrollExpansionEnabled, runTearLockedSettle, runTearForceNoHostZoom, runTearZoomlessRects, runTearHostState, runTearPinchBurst, runTearSeedExtentInk, runTearPinchCounted, runTearScrollTo, runPinchTeardown, countMagentaOutside, setShapeSnap, run, runFocal, runCentroidPan, runTopBoundary, runMarginPayment, runPinchReticle, runInfiniteTraversal, runExpandedDrawCoverage, runConstraintOrder, runColumnChanges, runColumnAutoControl, runColumnLocalGuardPlant, runViewportStyleObserver, runScrollDraw, runOwnedRequestCancellation, runZoomedWriteRoom, runLayerBoundsMount, runLayerBoundsTeardown, runPixelColumn, detectMark, runContinuousOffsetTrace , runPaneScrollMount, runPaneScrollWrite, runPaneScrollNudge, runPaneScrollRead , runTileMount, runTileRead, runTileDraw, runTileTeardown, runTileHash, runTileScroll , runTearMount, runTearRead, runTearPinch, runTearTeardown, runTearBacking, runTearLastStrokePoint, runTearForcedRefreshPlant, runTearForcedRefreshSettled, runTearSettleResize, runTearUpdateCarry };
+(window as any).scrollColumnAnchor = { setScrollExpansionEnabled, runTearLockedSettle, runTearZoomlessRects, runTearHostState, runTearPinchBurst, runTearSeedExtentInk, runTearPinchCounted, runTearScrollTo, runPinchTeardown, countMagentaOutside, setShapeSnap, run, runFocal, runCentroidPan, runTopBoundary, runMarginPayment, runPinchReticle, runInfiniteTraversal, runExpandedDrawCoverage, runConstraintOrder, runColumnChanges, runColumnAutoControl, runColumnLocalGuardPlant, runViewportStyleObserver, runScrollDraw, runOwnedRequestCancellation, runZoomedWriteRoom, runLayerBoundsMount, runLayerBoundsTeardown, runPixelColumn, detectMark, runContinuousOffsetTrace , runPaneScrollMount, runPaneScrollWrite, runPaneScrollNudge, runPaneScrollRead , runTileMount, runTileRead, runTileDraw, runTileTeardown, runTileHash, runTileScroll , runTearMount, runTearRead, runTearPinch, runTearTeardown, runTearBacking, runTearLastStrokePoint, runTearForcedRefreshPlant, runTearForcedRefreshSettled, runTearSettleResize, runTearUpdateCarry };
 /**
  * THE CAMERA'S SCALE OF RECORD, READ BESIDE AN INDEPENDENT MEASUREMENT.
  *

@@ -1195,12 +1195,23 @@ export default class HandwritingPlugin extends Plugin {
 	}
 	async startLocalCodexService(): Promise<void> {
 		if (!Platform.isDesktopApp) return;
+		// The gate lives HERE, not only at the call sites: a transcription
+		// modal left open across the settings toggle would otherwise restart
+		// the LAN-listening bridge from its recognize callback while the
+		// setting reads off (review finding, 2026-10-01).
+		if (!this.settings.codexEnabled) throw new Error("Turn on Transcribe handwriting with Codex in Handwriting settings first.");
 		const token = await this.getLocalCodexService().start();
 		if (this.unloaded) return;
 		if (this.settings.codexServiceToken !== token) {
 			this.settings.codexServiceToken = token;
 			await this.persistSettings();
 		}
+	}
+	/** The startup/toggle-on form: failures surface at the points of use
+	 * (the modals, Test connection, Sign in), so here they only log. */
+	startLocalCodexServiceQuietly(): void {
+		void this.startLocalCodexService().catch(error =>
+			console.error("[handwriting] Codex service startup failed", error));
 	}
 	stopLocalCodexService(): void {
 		this.codexService?.stop();
@@ -2070,12 +2081,7 @@ export default class HandwritingPlugin extends Plugin {
 		bindRecoveryNotices(this.store, (pageId) => this.noteNameFor(pageId));
 		await this.loadSettings();
 		if (this.settings.codexEnabled && Platform.isDesktopApp && typeof (window as Window & { require?: unknown }).require === "function") {
-			// Quietly: a startup failure (no Codex CLI, not signed in) surfaces
-			// again at every point of use - both modals and the settings tab's
-			// Test/Sign-in buttons call startLocalCodexService and show the
-			// message there - so a Notice here would only nag every launch.
-			void this.startLocalCodexService().catch(error =>
-				console.error("[handwriting] Codex service startup failed", error));
+			this.startLocalCodexServiceQuietly();
 		}
 
 		this.registerView(HANDWRITING_PEN_LAB_VIEW_TYPE, (leaf) => new PenLabView(leaf));
@@ -5384,13 +5390,15 @@ export default class HandwritingPlugin extends Plugin {
 		delete (carried as Record<string, unknown>).codexServiceRoot;
 		this.settings = {
 			...carried,
-			// Migration: the key postdates the feature. Desktop writes the token
-			// back after the first successful service start and iPads paste it,
-			// so a non-empty token is the one reliable "this vault already uses
-			// Codex" signal - those users stay on without a reload; everyone
-			// else (fresh installs included) starts with the feature off.
-			codexEnabled: typeof raw?.codexEnabled === "boolean" ? raw.codexEnabled
-				: typeof raw?.codexServiceToken === "string" && raw.codexServiceToken.trim().length > 0,
+			// Off unless EXPLICITLY on. An earlier migration inferred opt-in
+			// from a stored service token, but the pre-gate builds persisted a
+			// generated token on every desktop vault whose user merely had a
+			// signed-in Codex CLI - keeping those users silently hosting the
+			// bridge against the documented off-by-default promise (review
+			// finding, 2026-10-01). A vault that upgraded through a
+			// token-migrating build keeps its stored true; anyone else flips
+			// the toggle once.
+			codexEnabled: raw?.codexEnabled === true,
 			codexServiceUrl: typeof raw?.codexServiceUrl === "string" ? raw.codexServiceUrl : DEFAULT_CODEX_URL,
 			codexServiceToken: typeof raw?.codexServiceToken === "string" ? raw.codexServiceToken : "",
 			codexModel: typeof raw?.codexModel === "string" && /^[A-Za-z0-9._-]*$/.test(raw.codexModel) ? raw.codexModel : "",
@@ -6798,11 +6806,7 @@ export class HandwritingSettingTab extends PluginSettingTab {
 			case "codexEnabled":
 				s.codexEnabled = on;
 				if (on) {
-					// Same quiet contract as the startup path: a failure here
-					// (no CLI, not signed in) reappears with its message on the
-					// Test connection and Sign in buttons this toggle reveals.
-					if (Platform.isDesktopApp) void this.plugin.startLocalCodexService().catch(error =>
-						console.error("[handwriting] Codex service startup failed", error));
+					if (Platform.isDesktopApp) this.plugin.startLocalCodexServiceQuietly();
 				} else this.plugin.stopLocalCodexService();
 				// The rest of the recognition group exists only while this is
 				// on; same reason booxMode redraws the tab.

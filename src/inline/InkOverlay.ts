@@ -1925,14 +1925,18 @@ export class InkOverlayPlugin {
 	/** Host-local px the preview raster is currently translated by. See applyPreviewInkOffset. */
 	private previewInkOffset = 0;
 	/**
-	 * Settle-path breadcrumbs into the pen trace the bug report exports.
-	 * Diagnostics-gated inside traceSurface; one line per settle DECISION
-	 * (never per frame), so a device report can say which exit a pinch took -
-	 * added for the iPad "zoom-out keeps the old stroke size" report, which
-	 * no desktop rig reproduces.
+	 * Settle-path breadcrumbs into the pen trace the bug report exports. One
+	 * line per settle DECISION (never per frame of a healthy gesture), added
+	 * for the iPad "zoom-out keeps the old stroke size" report, which no
+	 * desktop rig reproduces - and which this instrument then root-caused.
+	 * LAZY, per the DiagSwitch call-site rule: the note is a closure so that
+	 * with diagnostics off nothing is built at all - presentationState() in
+	 * particular reads computed style and a rect, a forced layout flush that
+	 * must never be production's price for a discarded string.
 	 */
-	private tracePinch(note: string): void {
-		traceSurface("pinch", null, note);
+	private tracePinch(note: () => string): void {
+		if (!diagnosticsEnabled()) return;
+		traceSurface("pinch", null, note());
 	}
 	/**
 	 * The presentation half of a settle, for the device report: the camera can
@@ -2041,7 +2045,7 @@ export class InkOverlayPlugin {
  /** Camera commits in progress, plus a settle measure's write while it re-anchors; commitCameraScale carries a pending settle only at depth 1. */
  private commitDepth = 0;
  private viewportStyleDirty: {path:string|null;container:HTMLElement|null} | null = null;
- private viewportLayout: {parent:HTMLElement; paneWidth:number; paneHeight:number; externalScale:number; gutterScreen:number; baseTransform:string; baseZoom:number; zoomVerified?:boolean; width:number; height:number; column:number; columnBox:number; gutterX:number; sizerColumn:boolean; columnInset:boolean; ownLines:boolean; left:string; right:string; columnLocal:number|null; columnAuto:{lineWidth:number;fixed:number;scrollbar:number}|null; styles:Map<string,{value:string;priority:string}>} | null = null;
+ private viewportLayout: {parent:HTMLElement; paneWidth:number; paneHeight:number; externalScale:number; gutterScreen:number; baseTransform:string; baseZoom:number; zoomVerified?:boolean; rectVerified?:boolean; width:number; height:number; column:number; columnBox:number; gutterX:number; sizerColumn:boolean; columnInset:boolean; ownLines:boolean; left:string; right:string; columnLocal:number|null; columnAuto:{lineWidth:number;fixed:number;scrollbar:number}|null; styles:Map<string,{value:string;priority:string}>} | null = null;
  /** `CSS.supports("zoom", "0.5")`, asked once per overlay. See `hostZoomSupported`. */
  private hostZoomSupport: boolean | null = null;
  /**
@@ -4111,10 +4115,16 @@ export class InkOverlayPlugin {
 			this.router?.cameraTransformChanged();
 			return;
 		}
+		// EDGE-triggered, as the owed mechanism's design states: replay only
+		// when the geometry TURNS valid, not on every sync while it stays so.
+		// Level-triggering here re-ran commitCameraScale's whole refusal pass
+		// (retired settles, released measures, layout reads) once per camera
+		// sync for as long as some other refusal cause persisted (review
+		// finding, 2026-10-01). The debt's other triggers - pen lift, the
+		// stuck-preview heal, a new gesture's own settle - are unaffected.
+		const geometryTurnedValid = this.scaleGeometryValid === false;
 		this.scaleGeometryValid = true;
-		// The geometry just turned provably valid: pay any settle a refusal
-		// left owed (the rAF re-checks every hold condition for itself).
-		if (this.pinchSettleOwed) this.scheduleOwedSettle();
+		if (geometryTurnedValid && this.pinchSettleOwed) this.scheduleOwedSettle();
 		// Adopt it only when it MEANS something. Rect widths are fractional,
 		// so this quotient wobbles in its last decimals every frame; letting
 		// that through moved the camera origin every frame, and repaint()
@@ -5740,12 +5750,20 @@ export class InkOverlayPlugin {
 		// edit) used to eat the end here, and with the measure-hold timer
 		// already consumed nothing else could ever close the preview -
 		// handleResize and repaint then painted the pre-gesture camera for the
-		// life of the editor. The end still settles; only new gestures are refused.
+		// life of the editor. The end still settles; only new gestures are
+		// refused. It settles AT THE GESTURE-START SCALE, not wherever the
+		// fingers were: with the canvas off every recovery path (new pinches,
+		// the zoom commands, reset, fit) reads busy and refuses, so a
+		// mid-gesture zoom committed here would pin the note at an arbitrary
+		// factor nothing could undo until canvas mode came back (review
+		// finding, 2026-10-01). Settling back where the gesture began keeps
+		// s137 whole: a canvas-off note keeps the zoom it had.
 		if (!this.canvasMode) {
 			const liveGesture =
 				this.pinchPreview || this.pinchGive !== null ||
 				this.pinchRefScale !== null || this.pinchAnchor !== null;
 			if (!(phase === "end" && liveGesture)) return;
+			this.pinchPending = { next: this.pinchRefScale ?? this.pinchScaleNow };
 		}
 		// The router's ratios are relative to ITS gesture start. A preview the
 		// watchdog settled in place re-anchors mid-gesture (`rebasePinch`), so
@@ -5842,7 +5860,7 @@ export class InkOverlayPlugin {
 			this.reducePinchConstraint(next, phase === "end");
 		}
 		if (phase === "end") {
-			this.tracePinch(`end: next=${next.toFixed(4)} from=${(this.pinchRefScale ?? this.pinchScaleNow).toFixed(4)} pending=${this.pinchPending ? this.pinchPending.next.toFixed(4) : "none"} preview=${this.pinchPreview}`);
+			this.tracePinch(() => `end: next=${next.toFixed(4)} from=${(this.pinchRefScale ?? this.pinchScaleNow).toFixed(4)} pending=${this.pinchPending ? this.pinchPending.next.toFixed(4) : "none"} preview=${this.pinchPreview}`);
 			if (targetMoved && this.pinchPending === null) this.pinchPending = { next: this.pinchScaleNow };
 			// Nothing may still be queued behind the settle: a live frame
 			// running after it would write the mid-gesture styles back.
@@ -6017,7 +6035,7 @@ export class InkOverlayPlugin {
 		if (pending) this.applyPinchScale(pending.next, settle);
 		else if (settle && (this.pinchPreview || this.pinchScaleNow !== this.pinchRasterScale))
 			this.applyPinchScale(this.pinchScaleNow, true);
-		else if (settle) this.tracePinch(`settle skipped: raster already ${this.pinchRasterScale.toFixed(4)}`);
+		else if (settle) this.tracePinch(() => `settle skipped: raster already ${this.pinchRasterScale.toFixed(4)}`);
 	}
 
 	/**
@@ -6031,8 +6049,8 @@ export class InkOverlayPlugin {
 	 */
 	private applyPinchScale(next: number, settle: boolean): void {
 		const anchor = this.pinchAnchor;
-		if (!anchor) { if (settle) this.tracePinch(`settle dropped: no anchor, next=${next.toFixed(4)}`); return; }
-		if (settle) this.tracePinch(`settle begins next=${next.toFixed(4)} raster=${this.pinchRasterScale.toFixed(4)} preview=${this.pinchPreview}`);
+		if (!anchor) { if (settle) this.tracePinch(() => `settle dropped: no anchor, next=${next.toFixed(4)}`); return; }
+		if (settle) this.tracePinch(() => `settle begins next=${next.toFixed(4)} raster=${this.pinchRasterScale.toFixed(4)} preview=${this.pinchPreview}`);
 		// Both scales come from the GESTURE, not from the previous frame: the
 		// reference the gesture started at, and where it is being asked to go.
 		const from = this.pinchRefScale ?? this.pinchScaleNow;
@@ -6134,13 +6152,13 @@ export class InkOverlayPlugin {
 			// ink stays at the old raster scale forever (a pen contact holding
 			// frame.locked through the settle is a supported state, and iOS can
 			// deliver the end inside exactly that window).
-			if (!committed) { this.tracePinch(`settle refused -> owed next=${next.toFixed(4)}`); this.pinchSettleOwed = true; this.scheduleOwedSettle(); this.endPreviewPaper("cancel"); this.retirePanSettle("the settle commit was refused"); this.clearViewportPan(); return; }
-			this.tracePinch(`settle committed next=${next.toFixed(4)} ${this.presentationState()}`);
+			if (!committed) { this.tracePinch(() => `settle refused -> owed next=${next.toFixed(4)}`); this.pinchSettleOwed = true; this.scheduleOwedSettle(); this.endPreviewPaper("cancel"); this.retirePanSettle("the settle commit was refused"); this.clearViewportPan(); return; }
+			this.tracePinch(() => `settle committed next=${next.toFixed(4)} ${this.presentationState()}`);
 			// The commit-time snapshot can predate late box writes; this one is
 			// the RESTED state the user's eyes see. Armed only while recording:
 			// the measure-hold suite counts outstanding timers after a settle,
 			// and production should not pay even an empty timer per pinch.
-			if (diagnosticsEnabled()) this.winRef.setTimeout(() => this.tracePinch(`settled rest ${this.presentationState()}`), 600);
+			if (diagnosticsEnabled()) this.winRef.setTimeout(() => this.tracePinch(() => `settled rest ${this.presentationState()}`), 600);
 			this.pinchRasterScale = next;
 			this.setViewportScroll(nextLeft,nextTop);
 			this.reanchorPan();
@@ -8315,17 +8333,17 @@ export class InkOverlayPlugin {
 			this.owedSettleRaf = 0;
 			if (!this.pinchSettleOwed || this.retiring || !this.container) return;
 			if (this.view !== view || this.filePath() !== path) return;
-			if (this.pinchPreview || this.pinchGive !== null || this.pinchRefScale !== null) { this.tracePinch("owed settle holds: gesture live"); return; }
-			if (this.frame.locked || this.scaleGeometryValid === false) { this.tracePinch(`owed settle holds: ${this.frame.locked ? "frame-locked" : "geometry-invalid"}`); return; }
+			if (this.pinchPreview || this.pinchGive !== null || this.pinchRefScale !== null) { this.tracePinch(() => "owed settle holds: gesture live"); return; }
+			if (this.frame.locked || this.scaleGeometryValid === false) { this.tracePinch(() => `owed settle holds: ${this.frame.locked ? "frame-locked" : "geometry-invalid"}`); return; }
 			this.pinchSettleOwed = false;
 			// The same in-place re-commit handleResize's own resize path uses:
 			// no scroll target, no settle hold, scroll demand preserved. A
 			// commit refused here leaves the debt standing for the next trigger.
 			if (!this.commitCameraScale(this.pinchScaleNow, undefined, undefined, true)) {
-				this.tracePinch("owed settle refused again");
+				this.tracePinch(() => "owed settle refused again");
 				this.pinchSettleOwed = true;
 			} else {
-				this.tracePinch(`owed settle paid at ${this.pinchScaleNow.toFixed(4)}`);
+				this.tracePinch(() => `owed settle paid at ${this.pinchScaleNow.toFixed(4)}`);
 				// Unlike the resize path's same-scale re-commit, this one
 				// changed what the raster reflects: latch it, or flushPinch's
 				// raster-vs-scale guard keeps scheduling re-rasters of a
@@ -8347,11 +8365,11 @@ export class InkOverlayPlugin {
 	private healStuckPinch(): boolean {
 		if (!this.pinchPreview || this.measureHold !== null || this.pinchGive !== null) return false;
 		if (this.pinchAnchor !== null && this.pinchRefScale !== null) {
-			this.tracePinch("stuck preview healed: rebase");
+			this.tracePinch(() => "stuck preview healed: rebase");
 			this.rebasePinch();
 			return true;
 		}
-		this.tracePinch("stuck preview healed: dropped, settle owed");
+		this.tracePinch(() => "stuck preview healed: dropped, settle owed");
 		this.pinchPreview = false;
 		this.pinchSettleOwed = true;
 		this.scheduleOwedSettle();
@@ -8455,10 +8473,16 @@ export class InkOverlayPlugin {
 		const base = this.pinchLastRatio || 1;
 		this.pinch("end", 1, target);
 		// A refused settle left its re-raster owed. The synthetic re-anchor
-		// below would clear that debt as "a new gesture" - but there is no
-		// gesture here, only a lost end, so no later settle would ever pay it.
-		// Skip the re-anchor; a real start replaces it anyway.
-		if (this.pinchSettleOwed) { this.tracePinch("rebase skipped: settle owed"); return; }
+		// below would clear that debt as "a new gesture" - but when the glass
+		// is EMPTY there is no gesture, only a lost end, and no later settle
+		// would ever pay it: skip the re-anchor, a real start replaces it.
+		// With fingers STILL DOWN this watchdog fired on a live hold (a pen or
+		// palm contact keeping frame.locked is the exact state the owed
+		// mechanism supports), and skipping would null the anchor under them -
+		// every remaining move then bails at the pinchRefScale guard and the
+		// zoom freezes until a full regrip (review finding, 2026-10-01). A
+		// live hold re-anchors; its own real end settles and pays the debt.
+		if (this.pinchSettleOwed && !anyHandOnGlass()) { this.tracePinch(() => "rebase skipped: settle owed"); return; }
 		this.pinch("start", 1, target);
 		this.pinchRatioBase = base;
 	}
@@ -8984,43 +9008,53 @@ export class InkOverlayPlugin {
    // unverified behind a counter-sized box. The first owned factor off unity
    // does the reading; after it there are no more reads, preview frames
    // included.
+   // Flipping to the transform fallback, shared by both verifications below.
+   const demote=():void=>{
+    this.hostZoomSupport=false;fallback();
+    // The five canvases were placed for the zoom form - the plain band box,
+    // no transform - and the host has just moved to the other one, where the
+    // layer that matters is the band times k stretched back. Left alone they
+    // stay full-band compositor layers (five of 19900x22380 on Orion), which
+    // is the cost `canvasLayerBox` exists to cap. Re-placed from the cached
+    // box and scale: no DOM read, and nothing to do until one exists.
+    this.placeCanvasLayers();
+   };
    if(layout.zoomVerified!==true&&Math.abs(next-1)>SCALE_EPSILON) {
     layout.zoomVerified=true;
     const got=Number.parseFloat(this.winRef.getComputedStyle(host).zoom);
-    // AN ENGINE CAN ECHO THE PROPERTY AND STILL NOT MOVE THE GEOMETRY.
-    // Measured on an iPadOS WebKit (device trace, 2026-10-01): computed zoom
-    // reads back the written factor and the page visibly scales, but
-    // getBoundingClientRect stays at LAYOUT size. effectiveScale then
-    // measures 1.0 after every settle, the camera books the difference as an
-    // external counter-scale (ext = 1/zoom in all four settles of that
-    // trace), ink rasters at full size - the "zoom-out keeps the old stroke
-    // size" report - and pen input maps screen to note through the same
-    // wrong divisor, which is the zoomed pen offset. Rects are the unit
-    // every measurement runs in, so a zoom they exclude is a zoom this
-    // overlay cannot drive: the transform fallback moves rects identically
-    // on every engine. The host under an APPLIED zoom spans about the pane
-    // (the box write above is width/next, the zoom scales it back); under an
-    // ignored one it spans pane/next. Both rects carry every OUTER transform
-    // equally, so their ratio classifies either way the gate's |next-1|
-    // allows, and the same once-per-takeover budget pays for both reads.
-    // `typeof`, like hostZoomSupported's own note: the unit rigs build hosts
-    // with Object.create and hand-made elements that carry no rect method.
-    // A rig without rects defaults to "applied", which keeps it on the zoom
-    // path it was written against.
+    if(Number.isFinite(got)&&Math.abs(got-want)>1e-6)demote();
+   }
+   // AN ENGINE CAN ECHO THE PROPERTY AND STILL NOT MOVE THE GEOMETRY.
+   // Measured on an iPadOS WebKit (device trace, 2026-10-01): computed zoom
+   // reads back the written factor and the page visibly scales, but
+   // getBoundingClientRect stays at LAYOUT size. effectiveScale then
+   // measures 1.0 after every settle, the camera books the difference as an
+   // external counter-scale (ext = 1/zoom in all four settles of that
+   // trace), ink rasters at full size - the "zoom-out keeps the old stroke
+   // size" report - and pen input maps screen to note through the same
+   // wrong divisor, which is the zoomed pen offset. Rects are the unit
+   // every measurement runs in, so a zoom they exclude is a zoom this
+   // overlay cannot drive: the transform fallback moves rects identically
+   // on every engine. The host under an APPLIED zoom spans about the pane
+   // (the box write above is width/next, the zoom scales it back); under an
+   // ignored one it spans pane/next, and both rects carry every OUTER
+   // transform equally - so the ratio classifies cleanly, but ONLY when the
+   // factor is decisive. Near 100% the two hypotheses (1 and 1/next) sit
+   // within theme padding and sub-pixel noise of each other, and a
+   // misclassification is sticky for the overlay's life (review finding,
+   // 2026-10-01): a factor inside (0.8, 1.25) abstains, its own once-flag
+   // unset, and the first zoom deep enough to separate them casts the vote.
+   // The device bug only MATTERS at factors a user can see, which are
+   // exactly the decisive ones. One pair of rect reads per takeover.
+   // `typeof`, like hostZoomSupported's own note: the unit rigs build hosts
+   // with Object.create and hand-made elements that carry no rect method; a
+   // rig without rects defaults to "applied", the path it was written for.
+   if(this.hostZoomSupport!==false&&layout.rectVerified!==true&&(next<=0.8||next>=1.25)) {
+    layout.rectVerified=true;
     const hostRect=typeof host.getBoundingClientRect==="function"?host.getBoundingClientRect():null;
     const paneRect=typeof layout.parent.getBoundingClientRect==="function"?layout.parent.getBoundingClientRect():null;
     const ratio=hostRect&&paneRect&&paneRect.width>0&&hostRect.width>0?hostRect.width/paneRect.width:1;
-    const zoomInRects=Math.abs(ratio-1)<=Math.abs(ratio-1/next);
-    if((Number.isFinite(got)&&Math.abs(got-want)>1e-6)||!zoomInRects){
-     this.hostZoomSupport=false;fallback();
-     // The five canvases were placed for the zoom form - the plain band box,
-     // no transform - and the host has just moved to the other one, where the
-     // layer that matters is the band times k stretched back. Left alone they
-     // stay full-band compositor layers (five of 19900x22380 on Orion), which
-     // is the cost `canvasLayerBox` exists to cap. Re-placed from the cached
-     // box and scale: no DOM read, and nothing to do until one exists.
-     this.placeCanvasLayers();
-    }
+    if(Math.abs(ratio-1)>Math.abs(ratio-1/next))demote();
    }
   }
   else fallback();
@@ -9289,10 +9323,10 @@ export class InkOverlayPlugin {
    :(!bypassFloor&&next<this.zoomFloor&&!(next>=(this.pinchRefScale??this.pinchScaleNow)))?"below-floor"
    :next>MAX_PINCH_SCALE?"above-max"
    :!validCameraScale(next,this.view.dom.clientWidth,this.view.dom.clientHeight)?"invalid-scale":null;
-  if(refusal){this.tracePinch(`commit refused ${refusal} next=${next.toFixed(4)} now=${this.pinchScaleNow.toFixed(4)} raster=${this.pinchRasterScale.toFixed(4)}`);return false;}
+  if(refusal){this.tracePinch(() => `commit refused ${refusal} next=${next.toFixed(4)} now=${this.pinchScaleNow.toFixed(4)} raster=${this.pinchRasterScale.toFixed(4)}`);return false;}
   const previous=this.pinchScaleNow,effective=this.cssScale/previous*next;
-  if(!validCameraScale(effective)){this.tracePinch(`commit refused invalid-effective ${effective}`);return false;}
-  if(!this.prepareViewportLayout()){this.tracePinch("commit refused no-layout");return false;}
+  if(!validCameraScale(effective)){this.tracePinch(() => `commit refused invalid-effective ${effective}`);return false;}
+  if(!this.prepareViewportLayout()){this.tracePinch(() => "commit refused no-layout");return false;}
   const layout=this.viewportLayout!;
   const width=layout.width/next,height=layout.height/next;
   const target=scroll??{left:this.view.scrollDOM.scrollLeft,top:this.view.scrollDOM.scrollTop};
@@ -10561,9 +10595,20 @@ export class InkOverlayPlugin {
 	 */
 	private strokeAbandoned(): void {
 		const replayBand = this.bandSyncDeferred;
+		// Same debt, same release: the frame lock comes off in
+		// resetGestureState via frame.cancel(), and penUp - the only other
+		// replayer - never runs for an abandoned contact. Without this, a
+		// resize deferred under the lock (an iOS keyboard tick mid-stroke)
+		// stayed unapplied until some later unrelated pen lift - the exact
+		// dropped-adoption bug the flag exists to prevent, one release path
+		// over (review finding, 2026-10-01).
+		const replayResize = this.resizeOwedByLock;
+		this.resizeOwedByLock = false;
 		stripPenUp(this.mobileTools);
 		this.resetGestureState();
 		if (replayBand) this.scheduleRepaint("scroll");
+		if (replayResize) this.handleResize();
+		if (this.pinchSettleOwed) this.scheduleOwedSettle();
 		this.wet.clear(this.cssWidth, this.cssHeight);
 		this.highlightWet.clear(this.cssWidth, this.cssHeight);
 		// A teardown mid-handoff would otherwise strand the wet highlighter
