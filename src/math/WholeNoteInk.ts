@@ -2,6 +2,7 @@ import type { Editor, TFile } from "obsidian";
 import type { InkStroke } from "../ink/Stroke";
 import type { MathInk, TracePoint } from "./MathRecognition";
 import { inkImageBounds, type InkImageBounds } from "./MathInkImage";
+import { MAX_TRANSCRIPTION_CHARS } from "./CodexLimits";
 
 export interface MathEditor { editor?: Editor; file: TFile | null }
 
@@ -149,7 +150,7 @@ export function captureWholeNoteInsertionTarget(active: MathEditor, current: () 
 		const body = editor.getValue();
 		if (placement !== "end" && body !== original) throw new Error("The note changed while recognition ran. Copy the result or reopen this dialog.");
 		const items = placement === "sections" ? blocks : [{ markdown: combined, offset: placement === "cursor" ? cursor : body.length }];
-		if (!items.length || items.reduce((length, item) => length + item.markdown.length, 0) > 100_000 ||
+		if (!items.length || items.reduce((length, item) => length + item.markdown.length, 0) > MAX_TRANSCRIPTION_CHARS ||
 			items.some(item => !item.markdown.trim() || !Number.isInteger(item.offset) || item.offset < 0 || item.offset > body.length)) {
 			throw new Error("Review a nonempty transcription and a valid insertion point.");
 		}

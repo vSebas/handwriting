@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { build } from "esbuild";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import css from "../../styles.css?raw";
 import { chromium, type Browser, type Page } from "playwright";
 
 /**
@@ -53,7 +53,7 @@ beforeAll(async () => {
 beforeEach(async () => {
 	errors.length = 0;
 	await page.setContent("<!doctype html><html><body></body></html>");
-	await page.addStyleTag({ content: readFileSync("styles.css", "utf8") });
+	await page.addStyleTag({ content: css });
 	await page.addScriptTag({ content: source });
 });
 afterAll(async () => browser?.close());
