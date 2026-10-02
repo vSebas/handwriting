@@ -1935,6 +1935,32 @@ export class InkOverlayPlugin {
 		traceSurface("pinch", null, note);
 	}
 	/**
+	 * The presentation half of a settle, for the device report: the camera can
+	 * commit perfectly (the iPad zoom-out trace shows it does) while the HOST
+	 * and the canvas boxes present the old scale. One line, settle-time only,
+	 * diagnostics-gated by tracePinch - the computed-style reads cost nothing
+	 * at that rate. hz = hostZoomSupport; zv = the zoom write's verification;
+	 * host zoom/transform are what the engine actually computed; the canvas
+	 * row is the committed canvas's style box, counter-transform, backing and
+	 * painted rect, which together say which layer still carries the old k.
+	 */
+	private presentationState(): string {
+		try {
+			const host = this.view.dom;
+			const style = this.winRef.getComputedStyle(host);
+			const canvas = this.committedCanvas;
+			const rect = canvas?.getBoundingClientRect();
+			return `hz=${String(this.hostZoomSupport)} zv=${String(this.viewportLayout?.zoomVerified)}` +
+				` ext=${(this.viewportLayout?.externalScale ?? NaN).toFixed(3)} css=${this.cssScale.toFixed(4)}` +
+				` hostZoom=${style.zoom ?? "-"} hostTf=${style.transform}` +
+				` canvas[w=${canvas?.style.width} tf=${canvas?.style.transform || "none"}` +
+				` backing=${canvas?.width}x${canvas?.height} rect=${rect ? `${rect.width.toFixed(1)}x${rect.height.toFixed(1)}` : "-"}]` +
+				` cssBox=${this.cssWidth}x${this.cssHeight} dpr=${this.dpr}`;
+		} catch (error) {
+			return `presentation-state failed: ${String(error)}`;
+		}
+	}
+	/**
 	 * Host-local px the preview raster is moved DOWN by because a block above
 	 * the content changed height during the gesture (a title that rewraps as the
 	 * pinch narrows the host). See observeAboveContent.
@@ -6109,7 +6135,12 @@ export class InkOverlayPlugin {
 			// frame.locked through the settle is a supported state, and iOS can
 			// deliver the end inside exactly that window).
 			if (!committed) { this.tracePinch(`settle refused -> owed next=${next.toFixed(4)}`); this.pinchSettleOwed = true; this.scheduleOwedSettle(); this.endPreviewPaper("cancel"); this.retirePanSettle("the settle commit was refused"); this.clearViewportPan(); return; }
-			this.tracePinch(`settle committed next=${next.toFixed(4)}`);
+			this.tracePinch(`settle committed next=${next.toFixed(4)} ${this.presentationState()}`);
+			// The commit-time snapshot can predate late box writes; this one is
+			// the RESTED state the user's eyes see. Armed only while recording:
+			// the measure-hold suite counts outstanding timers after a settle,
+			// and production should not pay even an empty timer per pinch.
+			if (diagnosticsEnabled()) this.winRef.setTimeout(() => this.tracePinch(`settled rest ${this.presentationState()}`), 600);
 			this.pinchRasterScale = next;
 			this.setViewportScroll(nextLeft,nextTop);
 			this.reanchorPan();
