@@ -8987,7 +8987,31 @@ export class InkOverlayPlugin {
    if(layout.zoomVerified!==true&&Math.abs(next-1)>SCALE_EPSILON) {
     layout.zoomVerified=true;
     const got=Number.parseFloat(this.winRef.getComputedStyle(host).zoom);
-    if(Number.isFinite(got)&&Math.abs(got-want)>1e-6){
+    // AN ENGINE CAN ECHO THE PROPERTY AND STILL NOT MOVE THE GEOMETRY.
+    // Measured on an iPadOS WebKit (device trace, 2026-10-01): computed zoom
+    // reads back the written factor and the page visibly scales, but
+    // getBoundingClientRect stays at LAYOUT size. effectiveScale then
+    // measures 1.0 after every settle, the camera books the difference as an
+    // external counter-scale (ext = 1/zoom in all four settles of that
+    // trace), ink rasters at full size - the "zoom-out keeps the old stroke
+    // size" report - and pen input maps screen to note through the same
+    // wrong divisor, which is the zoomed pen offset. Rects are the unit
+    // every measurement runs in, so a zoom they exclude is a zoom this
+    // overlay cannot drive: the transform fallback moves rects identically
+    // on every engine. The host under an APPLIED zoom spans about the pane
+    // (the box write above is width/next, the zoom scales it back); under an
+    // ignored one it spans pane/next. Both rects carry every OUTER transform
+    // equally, so their ratio classifies either way the gate's |next-1|
+    // allows, and the same once-per-takeover budget pays for both reads.
+    // `typeof`, like hostZoomSupported's own note: the unit rigs build hosts
+    // with Object.create and hand-made elements that carry no rect method.
+    // A rig without rects defaults to "applied", which keeps it on the zoom
+    // path it was written against.
+    const hostRect=typeof host.getBoundingClientRect==="function"?host.getBoundingClientRect():null;
+    const paneRect=typeof layout.parent.getBoundingClientRect==="function"?layout.parent.getBoundingClientRect():null;
+    const ratio=hostRect&&paneRect&&paneRect.width>0&&hostRect.width>0?hostRect.width/paneRect.width:1;
+    const zoomInRects=Math.abs(ratio-1)<=Math.abs(ratio-1/next);
+    if((Number.isFinite(got)&&Math.abs(got-want)>1e-6)||!zoomInRects){
      this.hostZoomSupport=false;fallback();
      // The five canvases were placed for the zoom form - the plain band box,
      // no transform - and the host has just moved to the other one, where the

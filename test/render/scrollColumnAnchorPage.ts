@@ -5314,7 +5314,38 @@ function runTearForceNoHostZoom(): void {
 	(tearRig!.overlay as any).hostZoomSupport = false;
 }
 
-(window as any).scrollColumnAnchor = { setScrollExpansionEnabled, runTearLockedSettle, runTearForceNoHostZoom, runTearPinchBurst, runTearSeedExtentInk, runTearPinchCounted, runTearScrollTo, runPinchTeardown, countMagentaOutside, setShapeSnap, run, runFocal, runCentroidPan, runTopBoundary, runMarginPayment, runPinchReticle, runInfiniteTraversal, runExpandedDrawCoverage, runConstraintOrder, runColumnChanges, runColumnAutoControl, runColumnLocalGuardPlant, runViewportStyleObserver, runScrollDraw, runOwnedRequestCancellation, runZoomedWriteRoom, runLayerBoundsMount, runLayerBoundsTeardown, runPixelColumn, detectMark, runContinuousOffsetTrace , runPaneScrollMount, runPaneScrollWrite, runPaneScrollNudge, runPaneScrollRead , runTileMount, runTileRead, runTileDraw, runTileTeardown, runTileHash, runTileScroll , runTearMount, runTearRead, runTearPinch, runTearTeardown, runTearBacking, runTearLastStrokePoint, runTearForcedRefreshPlant, runTearForcedRefreshSettled, runTearSettleResize, runTearUpdateCarry };
+/**
+ * Model the iPadOS engine the 2026-10-01 device trace exposed: CSS zoom
+ * parses, computed style echoes it, the page visibly scales - but
+ * getBoundingClientRect of the zoomed subtree stays at LAYOUT size. Chromium
+ * includes the zoom in rects, so this strips it back out for the host and
+ * everything under it, per call, against whatever zoom the host carries at
+ * that moment. Positions are left alone: the verification and the scale
+ * measurements this exists to exercise read widths and heights.
+ */
+function runTearZoomlessRects(): void {
+	const host = tearRig!.view.dom as HTMLElement;
+	const proto = HTMLElement.prototype as unknown as { getBoundingClientRect(): DOMRect };
+	const real = proto.getBoundingClientRect;
+	proto.getBoundingClientRect = function (this: HTMLElement): DOMRect {
+		const r = real.call(this);
+		if (this !== host && !host.contains(this)) return r;
+		const z = Number.parseFloat(host.style.zoom || "1") || 1;
+		if (z === 1) return r;
+		return new DOMRect(r.x, r.y, r.width / z, r.height / z);
+	};
+}
+
+/** Which mechanism the host ended up on, for the rect-verification cells. */
+function runTearHostState() {
+	const overlay = tearRig!.overlay as any;
+	const host = tearRig!.view.dom as HTMLElement;
+	return { hostZoomSupport: overlay.hostZoomSupport as boolean | null,
+		hostZoom: host.style.zoom || "", hostTransform: host.style.transform || "",
+		cssScale: overlay.cssScale as number, pinchScaleNow: overlay.pinchScaleNow as number };
+}
+
+(window as any).scrollColumnAnchor = { setScrollExpansionEnabled, runTearLockedSettle, runTearForceNoHostZoom, runTearZoomlessRects, runTearHostState, runTearPinchBurst, runTearSeedExtentInk, runTearPinchCounted, runTearScrollTo, runPinchTeardown, countMagentaOutside, setShapeSnap, run, runFocal, runCentroidPan, runTopBoundary, runMarginPayment, runPinchReticle, runInfiniteTraversal, runExpandedDrawCoverage, runConstraintOrder, runColumnChanges, runColumnAutoControl, runColumnLocalGuardPlant, runViewportStyleObserver, runScrollDraw, runOwnedRequestCancellation, runZoomedWriteRoom, runLayerBoundsMount, runLayerBoundsTeardown, runPixelColumn, detectMark, runContinuousOffsetTrace , runPaneScrollMount, runPaneScrollWrite, runPaneScrollNudge, runPaneScrollRead , runTileMount, runTileRead, runTileDraw, runTileTeardown, runTileHash, runTileScroll , runTearMount, runTearRead, runTearPinch, runTearTeardown, runTearBacking, runTearLastStrokePoint, runTearForcedRefreshPlant, runTearForcedRefreshSettled, runTearSettleResize, runTearUpdateCarry };
 /**
  * THE CAMERA'S SCALE OF RECORD, READ BESIDE AN INDEPENDENT MEASUREMENT.
  *
