@@ -35,8 +35,8 @@ beforeAll(async () => {
 					},
 					withInsert ? (markdown: string, remove: Array<{ id: string }>, embeds: unknown, anchorOffset: number | null) =>
 						state.inserted.push({ markdown, remove: remove.map(stroke => stroke.id), embeds, anchorOffset }) : undefined,
-					(image: string, feedback: string, previous: string) => {
-						state.redraws.push({ feedback, previous });
+					(images: string[], feedback: string, previous: string, context: string) => {
+						state.redraws.push({ feedback, previous, context, images: images.length });
 						return Promise.resolve(state.redrawSvg);
 					});
 				state.modal = modal;

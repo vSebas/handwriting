@@ -42,7 +42,8 @@ export class WholeNoteRecognitionModal extends Modal {
 	private figureSeq = 0;
 
 	constructor(app: App, private source: NoteInkSource, private recognize: NoteImageRecognizer,
-		private commit: (result: NoteCommit) => void | Promise<void>, private redraw?: FigureRedrawer) { super(app); }
+		private commit: (result: NoteCommit) => void | Promise<void>, private redraw?: FigureRedrawer,
+		private noteImages?: (from: number, to: number | null) => Promise<string[]>) { super(app); }
 
 	onOpen(): void {
 		this.abort = new AbortController();
@@ -229,7 +230,14 @@ export class WholeNoteRecognitionModal extends Modal {
 		const block: ReviewBlock = { value, card, field, offset, suggestedOffset: offset,
 			placementSelect: null, strokes, replaceInk: false, figures, abort: new AbortController() };
 		this.blocks.push(block);
-		for (const figure of figures) renderFigureCard(card, figure, this.redraw, block.abort.signal);
+		// Context is read at REDRAW time, so edits to the reviewed Markdown
+		// ride along: the section's text, its ink overview, and any images
+		// already placed in the note between this anchor and the next.
+		const context = async () => ({
+			text: stripFigureTokens(this.blockMarkdown(block)),
+			images: [image, ...(this.noteImages ? await this.noteImages(block.offset, this.nextAnchorOffset(block.offset)) : [])],
+		});
+		for (const figure of figures) renderFigureCard(card, figure, this.redraw, block.abort.signal, context);
 		field.addEventListener("input", () => { block.value = field.value; this.updateOutput(); });
 		new Setting(card).setName("Mixed Markdown")
 			.addDropdown(dropdown => {
@@ -262,6 +270,13 @@ export class WholeNoteRecognitionModal extends Modal {
 					this.syncReplacementPlacement();
 				}));
 		this.updateOutput();
+	}
+
+	/** The next anchor AFTER this one in note order, bounding its section. */
+	private nextAnchorOffset(offset: number): number | null {
+		const following = this.source.anchors.map(anchor => anchor.offset)
+			.filter(candidate => candidate > offset);
+		return following.length ? Math.min(...following) : null;
 	}
 
 	private syncReplacementPlacement(): void {

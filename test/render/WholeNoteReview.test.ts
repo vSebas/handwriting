@@ -54,8 +54,8 @@ beforeAll(async () => {
 						}
 						state.commits.push(result);
 					},
-					(image: string, feedback: string, previous: string, signal: AbortSignal) => {
-						state.redraws.push({ feedback, previous });
+					(images: string[], feedback: string, previous: string, context: string, signal: AbortSignal) => {
+						state.redraws.push({ feedback, previous, context, images: images.length });
 						state.redrawSignals.push(signal);
 						if (state.holdRedraw) return new Promise(() => {});
 						return Promise.resolve(state.redrawSvg);
@@ -194,13 +194,17 @@ describe("whole-note handwriting review", () => {
 			const preview = document.querySelector('img[alt="Codex redraw of the figure"]') as HTMLImageElement | null;
 			return preview !== null && !preview.hidden && preview.src.startsWith("data:image/svg+xml");
 		});
-		expect(await page.evaluate(() => (window as any).noteTest.redraws)).toEqual([{ feedback: "", previous: "" }]);
+		// The section's transcription and its ink overview ride along as
+		// context, so Codex knows what the drawing is supposed to be.
+		expect(await page.evaluate(() => (window as any).noteTest.redraws))
+			.toEqual([{ feedback: "", previous: "", context: "Section 1", images: 2 }]);
 		// Request changes iterates on the PREVIOUS redraw, not from scratch.
 		await page.locator('textarea[aria-label="Describe what the redraw should change"]').fill("thicker axes");
 		await page.getByRole("button", { name: "Request changes" }).click();
 		await page.waitForFunction(() => (window as any).noteTest.redraws.length === 2);
 		const svg = await page.evaluate(() => (window as any).noteTest.redrawSvg);
-		expect(await page.evaluate(() => (window as any).noteTest.redraws[1])).toEqual({ feedback: "thicker axes", previous: svg });
+		expect(await page.evaluate(() => (window as any).noteTest.redraws[1]))
+			.toEqual({ feedback: "thicker axes", previous: svg, context: "Section 1", images: 2 });
 		await page.getByRole("button", { name: "Accept redraw" }).click();
 		await page.getByRole("button", { name: "Insert into this note" }).click();
 		const commit = await page.evaluate(() => (window as any).noteTest.commits[0]);
