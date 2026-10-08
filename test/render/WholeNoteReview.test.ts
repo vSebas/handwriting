@@ -25,6 +25,7 @@ beforeAll(async () => {
 			points: [{ x: 0, y, t: 0, pressure: .5 }, { x: 8, y: y + 12, t: 20, pressure: .5 }] });
 		const state = { commits: [], recognized: 0, count: 0, hold: false, resolve: null, signal: null, modal: null,
 			figures: [], redraws: [], redrawSvg: '<svg viewBox="0 0 4 4"><path d="M0 0 L4 4"/></svg>',
+			failCommit: false, holdRedraw: false, redrawSignals: [],
 			sanitize: (svg: string) => sanitizeFigureSvg(svg),
 			// One anchor per section at y = i*100, one stroke per section at y = i*100 + 20:
 			// every anchor after the first lands between strokes, so noteInkSections
@@ -44,9 +45,14 @@ beforeAll(async () => {
 							if (state.hold) state.resolve = () => resolve(value); else resolve(value);
 						});
 					},
-					(result: unknown) => state.commits.push(result),
-					(image: string, feedback: string, previous: string) => {
+					(result: unknown) => {
+						if (state.failCommit) return Promise.reject(new Error("The note changed while recognition ran. Copy the result or reopen this dialog."));
+						state.commits.push(result);
+					},
+					(image: string, feedback: string, previous: string, signal: AbortSignal) => {
 						state.redraws.push({ feedback, previous });
+						state.redrawSignals.push(signal);
+						if (state.holdRedraw) return new Promise(() => {});
 						return Promise.resolve(state.redrawSvg);
 					});
 				state.modal = modal;
@@ -197,14 +203,45 @@ describe("whole-note handwriting review", () => {
 		expect(errors).toEqual([]);
 	});
 
+	it("a failed insert lands in the status line with the review intact", async () => {
+		await recognizeSections(2);
+		await page.evaluate(() => { (window as any).noteTest.failCommit = true; });
+		await page.getByRole("button", { name: "Insert into this note" }).click();
+		// The dialog stays open with every reviewed card, not a false success.
+		await page.waitForFunction(() =>
+			document.querySelector('[role="status"]')?.textContent?.includes("The note changed"));
+		expect(await page.locator(".handwriting-image-result").count()).toBe(2);
+		expect(errors).toEqual([]);
+	});
+
+	it("removing a section cancels its running figure redraw", async () => {
+		await page.evaluate(() => {
+			(window as any).noteTest.figures = [{ id: 1, box: { left: 0, top: 0, right: 1, bottom: 1 } }];
+			(window as any).noteTest.holdRedraw = true;
+		});
+		await recognizeSections(1);
+		await page.locator(".handwriting-figure-result select").selectOption("redraw");
+		await page.getByRole("button", { name: "Ask Codex to redraw" }).click();
+		await page.waitForFunction(() => (window as any).noteTest.redrawSignals.length === 1);
+		expect(await page.evaluate(() => (window as any).noteTest.redrawSignals[0].aborted)).toBe(false);
+		// Removing the section aborts its redraw, which is what sends /cancel
+		// and frees the laptop's single-flight slot for the next request.
+		await page.getByRole("button", { name: "Remove" }).click();
+		expect(await page.evaluate(() => (window as any).noteTest.redrawSignals[0].aborted)).toBe(true);
+		expect(errors).toEqual([]);
+	});
+
 	it("the SVG sanitizer strips scripts, handlers and external references", async () => {
 		const cleaned = await page.evaluate(() => (window as any).noteTest.sanitize(
 			'<svg viewBox="0 0 10 10" onload="alert(1)"><script>alert(2)</script>' +
 			'<path d="M0 0 L5 5" fill="url(http://evil.example/x)"/>' +
+			'<rect width="2" height="2" style="background-image: \\75rl(https://evil.example/leak.png)"/>' +
 			'<a href="https://evil.example"><circle r="2"/></a></svg>'));
 		expect(cleaned).not.toContain("script");
 		expect(cleaned).not.toContain("onload");
+		// Including the CSS-escaped form (\\75rl = url): style goes entirely.
 		expect(cleaned).not.toContain("evil.example");
+		expect(cleaned).not.toContain("style=");
 		expect(cleaned).toContain("<path");
 		const refused = await page.evaluate(() => {
 			try { (window as any).noteTest.sanitize("I am sorry, I cannot draw that."); return null; }

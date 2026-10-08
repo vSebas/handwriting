@@ -22,7 +22,8 @@ describe("Codex handwriting service", () => {
 	});
 	it("sends mixed handwriting images and returns the figures the laptop declared", async () => {
 		network.mockResolvedValue({ status: 200, json: { markdown: "Text with $x^2$\r\nnext line",
-			figures: [{ id: 1, box: { left: 0.1, top: 0.2, right: 0.6, bottom: 0.7 } }, { id: 1, box: "junk" }] } });
+			figures: [{ id: 1, box: { left: 0.1, top: 0.2, right: 0.6, bottom: 0.7 } },
+				{ id: 1, box: { left: 0, top: 0, right: 1, bottom: 1 } }] } });
 		const images = ["data:image/png;base64,whole-note"];
 		expect(await recognizeWholeNoteImages(settings, images, new AbortController().signal, () => {}))
 			.toEqual({ markdown: "Text with $x^2$\nnext line",
@@ -84,6 +85,7 @@ describe("Codex handwriting service", () => {
 			[503, () => listCodexModels(settings), "Codex model list"],
 			[503, recognize, "Update Handwriting on the laptop"],
 			[404, recognize, "Update Handwriting on the laptop"],
+			[422, recognize, "misdeclared the drawn figures"],
 			[500, recognize, "transcription failed"],
 			[418, recognize, "HTTP 418"],
 		];

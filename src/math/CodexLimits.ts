@@ -25,8 +25,10 @@ export const MAX_IMAGES = 9;
 /** A transcription longer than this is a runaway answer, not a note. */
 export const MAX_TRANSCRIPTION_CHARS = 100_000;
 
-/** Figures Codex may declare per transcription; more is misdetection. */
-export const MAX_FIGURES = 6;
+/** Figures Codex may declare per transcription. Matches the twelve-section
+ * selection guard; MORE is a broken declaration and fails the parse loudly -
+ * silently dropping one would let ink replacement delete its drawing. */
+export const MAX_FIGURES = 12;
 /** A redrawn figure larger than this is runaway markup, not a drawing. */
 export const FIGURE_SVG_MAX_CHARS = 100_000;
 /** Cap on the change-request text a redraw carries back to Codex. */

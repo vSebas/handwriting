@@ -272,6 +272,20 @@ describe("desktop Codex bridge", () => {
 		expect(commands.some(args => args[0] === "exec")).toBe(false);
 	});
 
+	it("answers a typed 422 when the model breaks the figure contract", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { base, headers } = await startedService();
+			// A marker with no declaration: dropping it would let replace-ink
+			// delete the drawing, so the bridge fails the request instead.
+			execOutput = "Prose\n\n%%figure-9%%";
+			const result = await fetch(base + "/recognize-note", { method: "POST", headers,
+				body: JSON.stringify({ images: [PNG_PIXEL] }) });
+			expect(result.status).toBe(422);
+			expect(((await result.json()) as { error: string }).error).toContain("did not declare");
+		} finally { logged.mockRestore(); }
+	});
+
 	it("answers a typed 500 when the redraw is not SVG, instead of forwarding junk", async () => {
 		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
 		try {

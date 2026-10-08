@@ -56,6 +56,7 @@ async function serviceRequest(settings: CodexServiceSettings, path: "recognize-n
 		if (response.status === 400) throw new Error("The handwriting image is invalid. Try a smaller selection.");
 		if (response.status === 503 && path === "models") throw new Error("The laptop could not read the Codex model list. Check its Codex CLI installation.");
 		if (response.status === 503 || response.status === 404) throw new Error("Update Handwriting on the laptop and sign in to Codex CLI.");
+		if (response.status === 422) throw new Error("Codex misdeclared the drawn figures in this section. Transcribe again, or select a smaller area.");
 		if (response.status === 500) throw new Error("Codex transcription failed. Check the selected model and laptop sign-in.");
 		if (response.status !== 200) throw new Error(`Laptop service failed (HTTP ${response.status}).`);
 		const value: unknown = response.json;

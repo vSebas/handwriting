@@ -5,7 +5,7 @@ import {
 	LOGIN_TIMEOUT_MS, MAX_BODY_BYTES, MAX_IMAGES, MAX_IMAGE_PIXELS, MAX_TRANSCRIPTION_CHARS,
 	MODEL_LIST_MAX_CHARS, MODEL_LIST_TIMEOUT_MS, UNPINNED_MODEL_LABEL,
 } from "./CodexLimits";
-import { parseFigureFence, type DetectedFigure } from "./NoteFigures";
+import { FigureContractError, parseFigureFence, type DetectedFigure } from "./NoteFigures";
 
 const PROMPT = `Transcribe the attached image(s) of handwritten notes into Obsidian Markdown.
 If multiple images are attached, the first is an overview and the rest are
@@ -361,7 +361,11 @@ export class LocalCodexService {
 					// The wire gets the generic sentence; the real cause goes to
 					// the console, or a failed transcription is undebuggable.
 					console.error("[handwriting] Codex recognition failed", error);
-					reply(500, { error: "Codex recognition failed. Check sign-in and model access." });
+					// Except a broken figure declaration: that is the MODEL's
+					// contract failure, typed so the client tells the user to
+					// retry or select less, not to check their sign-in.
+					if (error instanceof FigureContractError) reply(422, { error: error.message });
+					else reply(500, { error: "Codex recognition failed. Check sign-in and model access." });
 				}
 				finally { this.active = false; }
 			} catch (error) {

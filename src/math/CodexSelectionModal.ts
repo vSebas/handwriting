@@ -16,15 +16,20 @@ export class CodexSelectionModal extends Modal {
 	private figures: ReviewFigure[] = [];
 	private replaceInk = false;
 	private figureSeq = 0;
+	/** Scopes one transcription's figure redraws: transcribing again (or
+	 * closing) cancels redraws of cards that no longer exist, so the laptop's
+	 * single-flight slot is not held for a discarded figure. */
+	private figureAbort = new AbortController();
 
 	constructor(app: App, private source: NoteInkSource, private recognize: NoteImageRecognizer,
 		private insert?: (markdown: string, remove: NoteStrokeSnapshot[], embeds: FigureEmbed[],
-			anchorOffset: number | null) => void,
+			anchorOffset: number | null) => void | Promise<void>,
 		private redraw?: FigureRedrawer) { super(app); }
 
 	onOpen(): void {
 		this.closed = false;
 		this.abort = new AbortController();
+		this.figureAbort = new AbortController();
 		this.setTitle("Transcribe selected handwriting");
 		this.contentEl.addClass("handwriting-math-modal");
 		this.contentEl.createEl("p", { text: `${this.source.strokes.length} selected pen strokes. Codex reads mixed text, equations, and visual relationships, and marks drawn figures for their own review. The original ink is kept unless you replace it.` });
@@ -43,12 +48,14 @@ export class CodexSelectionModal extends Modal {
 				if (this.closed) return;
 				this.figures = [];
 				this.figureList.empty();
+				this.figureAbort.abort();
+				this.figureAbort = new AbortController();
 				if (this.insert) {
 					const review = reviewFiguresFor(result.markdown, result.figures, this.source.bounds,
 						this.source.strokes, () => `hw${++this.figureSeq}`);
 					this.figures = review.figures;
 					this.output.value = review.markdown;
-					for (const figure of review.figures) renderFigureCard(this.figureList, figure, this.redraw, this.abort.signal);
+					for (const figure of review.figures) renderFigureCard(this.figureList, figure, this.redraw, this.figureAbort.signal);
 				} else {
 					// The copy-only surface (PDF ink) writes no embed files, so
 					// no figure token may reach the clipboard.
@@ -78,7 +85,7 @@ export class CodexSelectionModal extends Modal {
 					? "Insert beside the ink" : "Insert at saved cursor");
 			}));
 		const actions = new Setting(this.contentEl);
-		if (this.insert) actions.addButton(button => { insertButton = button; button.setButtonText("Insert at saved cursor").setCta().onClick(() => {
+		if (this.insert) actions.addButton(button => { insertButton = button; button.setButtonText("Insert at saved cursor").setCta().onClick(async () => {
 			if (this.pending) return;
 			try {
 				if (!this.output.value.trim()) throw new Error("Transcribe and review the selection first.");
@@ -86,10 +93,15 @@ export class CodexSelectionModal extends Modal {
 				const markdown = stripTokens(this.output.value, collected.strip);
 				if (!markdown.trim()) throw new Error("Transcribe and review the selection first.");
 				const remove = this.replaceInk ? this.source.strokes.filter(stroke => !collected.keepInkIds.has(stroke.id)) : [];
-				this.insert!(markdown, remove, collected.embeds, this.replaceInk ? this.insertionAnchor() : null);
+				// AWAITED: a failed insert must land back in this status line
+				// with the review intact, not close the dialog as a success.
+				this.pending = true;
+				try { await this.insert!(markdown, remove, collected.embeds, this.replaceInk ? this.insertionAnchor() : null); }
+				finally { this.pending = false; }
+				if (this.closed) return;
 				this.close();
 				new Notice(remove.length ? "Handwriting: transcription inserted; selected pen ink removed." : "Handwriting: transcription inserted; original ink kept.");
-			} catch (error) { this.status.setText(error instanceof Error ? error.message : "Could not insert transcription."); }
+			} catch (error) { if (!this.closed) this.status.setText(error instanceof Error ? error.message : "Could not insert transcription."); }
 		}); });
 		actions.addButton(button => button.setButtonText("Copy Markdown").onClick(async () => {
 			if (this.pending || this.closed) return;
@@ -114,6 +126,7 @@ export class CodexSelectionModal extends Modal {
 	onClose(): void {
 		this.closed = true;
 		this.abort.abort();
+		this.figureAbort.abort();
 		this.contentEl.empty();
 	}
 }

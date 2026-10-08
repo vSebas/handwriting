@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-	coerceFigures, figureNoteBounds, figureToken, parseFigureFence, stripFigureTokens, stripTokens,
-	strokesInFigure,
+	FigureContractError, coerceFigures, figureNoteBounds, figureToken, parseFigureFence,
+	stripFigureTokens, stripTokens, strokesInFigure,
 } from "./NoteFigures";
 import { MAX_FIGURES } from "./CodexLimits";
 
@@ -14,10 +14,13 @@ describe("figure detection parsing", () => {
 		expect(figures).toEqual([{ id: 1, box: { left: 0.1, top: 0.2, right: 0.6, bottom: 0.7 } }]);
 	});
 
-	it("strips stray tokens when no fence declares them, so no marker leaks into a note", () => {
-		const { markdown, figures } = parseFigureFence("Before\n\n%%figure-1%%\n\nafter");
-		expect(figures).toEqual([]);
-		expect(markdown).toBe("Before\n\nafter");
+	it("fails loudly on a marker with no declaration instead of silently losing the figure", () => {
+		// A stripped marker's drawing would be deleted as transcribed text
+		// under replace-ink, so the contract break fails the transcription.
+		expect(() => parseFigureFence("Before\n\n%%figure-1%%\n\nafter")).toThrow(FigureContractError);
+		expect(() => parseFigureFence("Text\n\n```figures\nnot json\n```")).toThrow(FigureContractError);
+		// No markers and no fence is simply a note without figures.
+		expect(parseFigureFence("Just text")).toEqual({ markdown: "Just text", figures: [] });
 	});
 
 	it("normalizes tokens: first occurrence kept on its own line, duplicates dropped, missing appended", () => {
@@ -31,19 +34,23 @@ describe("figure detection parsing", () => {
 		expect(markdown.endsWith("%%figure-2%%")).toBe(true);
 	});
 
-	it("drops malformed boxes and caps the figure count instead of trusting the model", () => {
+	it("clamps rounding slips, dedupes repeats, and throws on anything it would have to drop", () => {
+		// A dropped declaration would delete its drawing under replace-ink,
+		// so only harmless deviations degrade; the rest fail the parse.
 		expect(coerceFigures([
-			{ id: 1, box: [0.2, 0.2, 0.1, 0.9] },          // left >= right
-			{ id: 2, box: [0, 0, 1, 2] },                  // out of range
-			{ id: 3, box: [0, 0, 1] },                     // wrong arity
-			{ id: 3.5, box: [0, 0, 1, 1] },                // non-integer id
-			{ id: 4, box: [0.1, 0.1, 0.9, 0.9] },          // valid
-			{ id: 4, box: [0.1, 0.1, 0.9, 0.9] },          // duplicate id
-			"junk",
-		])).toEqual([{ id: 4, box: { left: 0.1, top: 0.1, right: 0.9, bottom: 0.9 } }]);
-		expect(coerceFigures("not an array")).toEqual([]);
-		const many = Array.from({ length: MAX_FIGURES + 3 }, (_, index) => ({ id: index + 1, box: [0, 0, 1, 1] }));
-		expect(coerceFigures(many)).toHaveLength(MAX_FIGURES);
+			{ id: 1, box: [-0.01, 0, 1.02, 0.5] },         // rounding slip: clamped
+			{ id: 1, box: [0, 0, 1, 1] },                  // duplicate id: first wins
+		])).toEqual([{ id: 1, box: { left: 0, top: 0, right: 1, bottom: 0.5 } }]);
+		for (const broken of [
+			[{ id: 2, box: [0.2, 0.2, 0.1, 0.9] }],        // left >= right
+			[{ id: 3, box: [0, 0, 1] }],                   // wrong arity
+			[{ id: 3.5, box: [0, 0, 1, 1] }],              // non-integer id
+			["junk"],
+			"not an array",
+			Array.from({ length: MAX_FIGURES + 1 }, (_, index) => ({ id: index + 1, box: [0, 0, 1, 1] })),
+		]) {
+			expect(() => coerceFigures(broken), JSON.stringify(broken).slice(0, 48)).toThrow(FigureContractError);
+		}
 	});
 });
 

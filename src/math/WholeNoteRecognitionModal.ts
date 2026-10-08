@@ -9,6 +9,10 @@ interface ReviewBlock {
 	value: string; card: HTMLElement; field: HTMLTextAreaElement;
 	offset: number; suggestedOffset: number; placementSelect: HTMLSelectElement | null;
 	strokes: NoteStrokeSnapshot[]; replaceInk: boolean; figures: ReviewFigure[];
+	/** Scopes the block's figure redraws: removing the section cancels them
+	 * (and /cancel frees the laptop) instead of leaving Codex drawing for a
+	 * card that no longer exists. */
+	abort: AbortController;
 }
 export interface NoteCommit {
 	blocks: Array<{ markdown: string; offset: number }>; placement: NotePlacement; combined: string;
@@ -38,7 +42,7 @@ export class WholeNoteRecognitionModal extends Modal {
 	private figureSeq = 0;
 
 	constructor(app: App, private source: NoteInkSource, private recognize: NoteImageRecognizer,
-		private commit: (result: NoteCommit) => void, private redraw?: FigureRedrawer) { super(app); }
+		private commit: (result: NoteCommit) => void | Promise<void>, private redraw?: FigureRedrawer) { super(app); }
 
 	onOpen(): void {
 		this.abort = new AbortController();
@@ -153,7 +157,7 @@ export class WholeNoteRecognitionModal extends Modal {
 		this.output = this.contentEl.createEl("textarea", { attr: { "aria-label": "Combined Markdown transcription", rows: "10" } });
 		this.output.readOnly = true;
 		new Setting(this.contentEl)
-			.addButton(button => button.setButtonText("Insert into this note").setCta().onClick(() => {
+			.addButton(button => button.setButtonText("Insert into this note").setCta().onClick(async () => {
 				if (this.pending) return;
 				try {
 					// Token presence is judged against the text that actually
@@ -181,10 +185,17 @@ export class WholeNoteRecognitionModal extends Modal {
 						? block.strokes.filter(stroke => !keepInk.has(stroke.id)).map(stroke => [stroke.id, stroke] as const) : [])).values()];
 					if (this.blocks.some(block => block.replaceInk) && !remove.length && !keepInk.size) throw new Error("No complete pen strokes are selected for replacement. Select a larger area.");
 					if (remove.length && this.placement !== "sections") throw new Error("Replacing ink inserts beside its original section.");
-					this.commit({ blocks, placement: this.placement, combined, remove, embeds });
+					// AWAITED: a failed insert (the note changed, an embed write
+					// refused) must land back in this status line with the
+					// reviewed state intact, not close the dialog over a note
+					// that never received the text.
+					this.pending = true;
+					try { await this.commit({ blocks, placement: this.placement, combined, remove, embeds }); }
+					finally { this.pending = false; }
+					if (this.closed) return;
 					this.close();
 					new Notice(remove.length ? "Handwriting: transcription inserted; selected pen ink removed." : "Handwriting: transcription inserted; original ink kept.");
-				} catch (error) { this.status.setText(error instanceof Error ? error.message : "Could not insert transcription."); }
+				} catch (error) { if (!this.closed) this.status.setText(error instanceof Error ? error.message : "Could not insert transcription."); }
 			}))
 			.addButton(button => button.setButtonText("Copy Markdown").onClick(async () => {
 				if (this.pending) return;
@@ -212,9 +223,9 @@ export class WholeNoteRecognitionModal extends Modal {
 		const field = card.createEl("textarea", { attr: { "aria-label": "Recognized Markdown", rows: "3" } });
 		field.value = value;
 		const block: ReviewBlock = { value, card, field, offset, suggestedOffset: offset,
-			placementSelect: null, strokes, replaceInk: false, figures };
+			placementSelect: null, strokes, replaceInk: false, figures, abort: new AbortController() };
 		this.blocks.push(block);
-		for (const figure of figures) renderFigureCard(card, figure, this.redraw, this.abort.signal);
+		for (const figure of figures) renderFigureCard(card, figure, this.redraw, block.abort.signal);
 		field.addEventListener("input", () => { block.value = field.value; this.updateOutput(); });
 		new Setting(card).setName("Mixed Markdown")
 			.addDropdown(dropdown => {
@@ -230,6 +241,7 @@ export class WholeNoteRecognitionModal extends Modal {
 				this.updateOutput();
 			}))
 			.addButton(button => button.setButtonText("Remove").onClick(() => {
+				block.abort.abort();
 				this.blocks.splice(this.blocks.indexOf(block), 1);
 				card.remove(); this.updateOutput(); this.syncReplacementPlacement();
 			}));
@@ -271,6 +283,7 @@ export class WholeNoteRecognitionModal extends Modal {
 	onClose(): void {
 		this.closed = true;
 		this.abort.abort();
+		for (const block of this.blocks) block.abort.abort();
 		this.contentEl.empty();
 	}
 }

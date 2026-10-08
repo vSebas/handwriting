@@ -1240,9 +1240,10 @@ export default class HandwritingPlugin extends Plugin {
 	 * figure embed as an .svg beside the note, swap its token for the embed
 	 * link, insert, and only then remove the replaced ink. The insert itself
 	 * re-checks that the note has not changed since the dialog opened, so the
-	 * awaits before it cannot smuggle text into a different note; an embed
-	 * file written before such a refusal stays in the vault, which beats
-	 * inserting links to files that were never written.
+	 * awaits before it cannot smuggle text into a different note. The modals
+	 * AWAIT this promise: a rejection lands in the dialog's status line with
+	 * the review intact, and any embed file already written for the refused
+	 * insert is taken back out of the vault rather than orphaned.
 	 */
 	private async insertTranscription(
 		overlay: { validateTranscribedInk(path: string, expected: readonly Pick<NoteStrokeSnapshot, "id" | "signature">[]): void;
@@ -1253,16 +1254,26 @@ export default class HandwritingPlugin extends Plugin {
 		if (remove.length) overlay.validateTranscribedInk(file.path, remove);
 		const links = new Map<string, string>();
 		const base = file.path.replace(/\.md$/, "");
-		for (const embed of embeds) {
-			const target = await this.firstFreePath(n => `${base}.figure-${n}.svg`);
-			await this.app.vault.create(target, embed.svg);
-			links.set(embed.token, `![[${target}]]`);
+		const created: string[] = [];
+		try {
+			for (const embed of embeds) {
+				const target = await this.firstFreePath(n => `${base}.figure-${n}.svg`);
+				await this.app.vault.create(target, embed.svg);
+				created.push(target);
+				links.set(embed.token, `![[${target}]]`);
+			}
+			const resolve = (text: string): string => {
+				for (const [token, link] of links) text = text.split(token).join(link);
+				return text;
+			};
+			insert(blocks.map(block => ({ markdown: resolve(block.markdown), offset: block.offset })), placement, resolve(combined));
+		} catch (error) {
+			for (const path of created) {
+				try { await this.app.vault.adapter.remove(path); }
+				catch { /* An unremovable orphan still beats a broken embed link. */ }
+			}
+			throw error;
 		}
-		const resolve = (text: string): string => {
-			for (const [token, link] of links) text = text.split(token).join(link);
-			return text;
-		};
-		insert(blocks.map(block => ({ markdown: resolve(block.markdown), offset: block.offset })), placement, resolve(combined));
 		if (remove.length) overlay.removeTranscribedInk(file.path, remove);
 	}
 	store!: PageStore;
@@ -3136,13 +3147,13 @@ export default class HandwritingPlugin extends Plugin {
 								}
 								return recognizeWholeNoteImages({ url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken,
 									model: this.settings.codexModel }, images, signal, progress);
-							}, insert && overlay && file ? (markdown, remove, embeds, anchorOffset) => {
-								runDetached(this.insertTranscription(overlay, file, insert,
+							}, insert && overlay && file ? (markdown, remove, embeds, anchorOffset) =>
+								// Returned, not detached: the modal awaits it so a
+								// refused insert surfaces in its status line.
+								this.insertTranscription(overlay, file, insert,
 									[{ markdown, offset: anchorOffset ?? 0 }],
-									anchorOffset !== null ? "sections" : "cursor", markdown, remove, embeds),
-									"insert lasso transcription", error => new Notice(`Handwriting: ${
-										error instanceof Error ? error.message : "Could not insert the transcription."}`));
-							} : undefined, this.figureRedrawer());
+									anchorOffset !== null ? "sections" : "cursor", markdown, remove, embeds)
+							: undefined, this.figureRedrawer());
 						this.selectionModal.open();
 					} catch (error) {
 						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read the selected ink."}`);
@@ -3181,12 +3192,11 @@ export default class HandwritingPlugin extends Plugin {
 								const settings = { url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken, model: this.settings.codexModel };
 								return recognizeWholeNoteImages(settings, images, signal, progress);
 							},
-							result => {
-								runDetached(this.insertTranscription(overlay, file, insert, result.blocks,
-									result.placement, result.combined, result.remove, result.embeds),
-									"insert note transcription", error => new Notice(`Handwriting: ${
-										error instanceof Error ? error.message : "Could not insert the transcription."}`));
-							}, this.figureRedrawer());
+							// Returned, not detached: the modal awaits it so a
+							// refused insert surfaces in its status line.
+							result => this.insertTranscription(overlay, file, insert, result.blocks,
+								result.placement, result.combined, result.remove, result.embeds),
+							this.figureRedrawer());
 						this.wholeNoteModal.open();
 					} catch (error) {
 						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read note ink."}`);
