@@ -1,15 +1,21 @@
 import { App, Modal, Notice, Platform, Setting } from "obsidian";
+import { collectFigureEmbeds, renderFigureCard, reviewFiguresFor,
+	type FigureEmbed, type FigureRedrawer, type ReviewFigure } from "./FigureReview";
 import { noteInkImage, noteInkTiles } from "./MathInkImage";
+import { stripFigureTokens, stripTokens, type DetectedFigure } from "./NoteFigures";
 import { imageSelectionBounds, noteInkSections, type NoteInkSource, type NotePlacement, type NoteStrokeSnapshot } from "./WholeNoteInk";
 
 interface ReviewBlock {
 	value: string; card: HTMLElement; field: HTMLTextAreaElement;
 	offset: number; suggestedOffset: number; placementSelect: HTMLSelectElement | null;
-	strokes: NoteStrokeSnapshot[]; replaceInk: boolean;
+	strokes: NoteStrokeSnapshot[]; replaceInk: boolean; figures: ReviewFigure[];
 }
-export interface NoteCommit { blocks: Array<{ markdown: string; offset: number }>; placement: NotePlacement; combined: string; remove: NoteStrokeSnapshot[] }
+export interface NoteCommit {
+	blocks: Array<{ markdown: string; offset: number }>; placement: NotePlacement; combined: string;
+	remove: NoteStrokeSnapshot[]; embeds: FigureEmbed[];
+}
 export type NoteImageRecognizer = (images: string[], signal: AbortSignal,
-	progress: (message: string) => void) => Promise<string>;
+	progress: (message: string) => void) => Promise<{ markdown: string; figures: DetectedFigure[] }>;
 
 /** The user selects visual crops; no stroke clustering can cut a word apart. */
 export class WholeNoteRecognitionModal extends Modal {
@@ -28,9 +34,11 @@ export class WholeNoteRecognitionModal extends Modal {
 	private abort = new AbortController();
 	private pending = false;
 	private closed = false;
+	/** Two sections may both declare "figure 1"; this makes tokens unique. */
+	private figureSeq = 0;
 
-	constructor(app: App, private source: NoteInkSource,
-		private recognize: NoteImageRecognizer, private commit: (result: NoteCommit) => void) { super(app); }
+	constructor(app: App, private source: NoteInkSource, private recognize: NoteImageRecognizer,
+		private commit: (result: NoteCommit) => void, private redraw?: FigureRedrawer) { super(app); }
 
 	onOpen(): void {
 		this.abort = new AbortController();
@@ -109,13 +117,15 @@ export class WholeNoteRecognitionModal extends Modal {
 						this.status.setText(`Recognizing section ${index + 1} of ${sections.length}…`);
 						const preview = noteInkImage(section.ink, section.bounds);
 						const images = noteInkTiles(section.ink, section.bounds);
-						const value = await this.recognize(images, this.abort.signal, message => {
+						const result = await this.recognize(images, this.abort.signal, message => {
 							if (!this.closed) this.status.setText(`Section ${index + 1}: ${message}`);
 						});
 						if (this.closed) return;
+						const review = reviewFiguresFor(result.markdown, result.figures, section.bounds,
+							section.strokes, () => `hw${++this.figureSeq}`);
 						const complete = section.strokes.filter(stroke => stroke.bounds.left >= bounds.left && stroke.bounds.right <= bounds.right &&
 							stroke.bounds.top >= bounds.top && stroke.bounds.bottom <= bounds.bottom);
-						this.addBlock(value, preview, section.anchor.offset, complete);
+						this.addBlock(review.markdown, preview, section.anchor.offset, complete, review.figures);
 					}
 					this.status.setText("Review each reading and its insertion section. Select another area if needed.");
 				} catch (error) {
@@ -146,16 +156,32 @@ export class WholeNoteRecognitionModal extends Modal {
 			.addButton(button => button.setButtonText("Insert into this note").setCta().onClick(() => {
 				if (this.pending) return;
 				try {
+					// Token presence is judged against the text that actually
+					// inserts: per-section Markdown for matched placement, the
+					// editable combined copy for cursor/end.
+					const present = (token: string) => this.placement === "sections"
+						? this.blocks.some(block => this.blockMarkdown(block).includes(token))
+						: this.output.value.includes(token);
+					const embeds: FigureEmbed[] = [];
+					const keepInk = new Set<string>();
+					const strip: string[] = [];
+					for (const block of this.blocks) {
+						const collected = collectFigureEmbeds(block.figures, present);
+						embeds.push(...collected.embeds);
+						for (const id of collected.keepInkIds) keepInk.add(id);
+						strip.push(...collected.strip);
+					}
 					const blocks = this.blocks.flatMap(block => {
-						const markdown = this.blockMarkdown(block);
+						const markdown = stripTokens(this.blockMarkdown(block), strip);
 						return markdown ? [{ markdown, offset: block.offset }] : [];
 					});
-					if (!this.output.value.trim() || !blocks.length) throw new Error("Recognize and review at least one section first.");
+					const combined = stripTokens(this.output.value, strip);
+					if (!combined.trim() || !blocks.length) throw new Error("Recognize and review at least one section first.");
 					const remove = [...new Map(this.blocks.flatMap(block => block.replaceInk && this.blockMarkdown(block)
-						? block.strokes.map(stroke => [stroke.id, stroke] as const) : [])).values()];
-					if (this.blocks.some(block => block.replaceInk) && !remove.length) throw new Error("No complete pen strokes are selected for replacement. Select a larger area.");
+						? block.strokes.filter(stroke => !keepInk.has(stroke.id)).map(stroke => [stroke.id, stroke] as const) : [])).values()];
+					if (this.blocks.some(block => block.replaceInk) && !remove.length && !keepInk.size) throw new Error("No complete pen strokes are selected for replacement. Select a larger area.");
 					if (remove.length && this.placement !== "sections") throw new Error("Replacing ink inserts beside its original section.");
-					this.commit({ blocks, placement: this.placement, combined: this.output.value, remove });
+					this.commit({ blocks, placement: this.placement, combined, remove, embeds });
 					this.close();
 					new Notice(remove.length ? "Handwriting: transcription inserted; selected pen ink removed." : "Handwriting: transcription inserted; original ink kept.");
 				} catch (error) { this.status.setText(error instanceof Error ? error.message : "Could not insert transcription."); }
@@ -164,7 +190,8 @@ export class WholeNoteRecognitionModal extends Modal {
 				if (this.pending) return;
 				try {
 					if (!this.output.value.trim()) throw new Error("Recognize a selection or enter Markdown first.");
-					await this.contentEl.ownerDocument.defaultView!.navigator.clipboard.writeText(this.output.value);
+					// No embed file exists on the copy path, so no token may leave with the text.
+					await this.contentEl.ownerDocument.defaultView!.navigator.clipboard.writeText(stripFigureTokens(this.output.value));
 					new Notice("Handwriting: transcription copied");
 				} catch (error) { this.status.setText(error instanceof Error ? error.message : "Could not copy transcription."); }
 			}));
@@ -178,14 +205,16 @@ export class WholeNoteRecognitionModal extends Modal {
 		this.selectionEl.style.height = `${Math.abs(y2 - y1) * 100}%`;
 	}
 
-	private addBlock(value: string, image: string, offset: number, strokes: NoteStrokeSnapshot[]): void {
+	private addBlock(value: string, image: string, offset: number, strokes: NoteStrokeSnapshot[],
+		figures: ReviewFigure[]): void {
 		const card = this.list.createDiv({ cls: "handwriting-image-result" });
 		card.createEl("img", { attr: { src: image, alt: "Recognized handwriting selection" } });
 		const field = card.createEl("textarea", { attr: { "aria-label": "Recognized Markdown", rows: "3" } });
 		field.value = value;
 		const block: ReviewBlock = { value, card, field, offset, suggestedOffset: offset,
-			placementSelect: null, strokes, replaceInk: false };
+			placementSelect: null, strokes, replaceInk: false, figures };
 		this.blocks.push(block);
+		for (const figure of figures) renderFigureCard(card, figure, this.redraw, this.abort.signal);
 		field.addEventListener("input", () => { block.value = field.value; this.updateOutput(); });
 		new Setting(card).setName("Mixed Markdown")
 			.addDropdown(dropdown => {
@@ -205,7 +234,7 @@ export class WholeNoteRecognitionModal extends Modal {
 				card.remove(); this.updateOutput(); this.syncReplacementPlacement();
 			}));
 		new Setting(card).setName(`Replace this section's pen ink (${strokes.length} strokes)`)
-			.setDesc("Removes every pen stroke in this selected section, including drawings. Leave this off to keep a graph, or lasso only the writing for replacement. Other text and pasted images stay in the note.")
+			.setDesc("Removes this section's pen strokes after inserting. A detected figure follows its own choice above: kept as pen ink it is never removed; embedded as an image its ink is replaced by the embed. Other text and pasted images stay in the note.")
 			.addToggle(toggle => toggle.setValue(false).setDisabled(strokes.length === 0)
 				.onChange(value => {
 					block.replaceInk = value;

@@ -17,12 +17,15 @@ beforeAll(async () => {
 	const bundle = await build({ stdin: { contents: `
 		import { WholeNoteRecognitionModal } from "./src/math/WholeNoteRecognitionModal";
 		import { noteInkSnapshot } from "./src/math/WholeNoteInk";
+		import { sanitizeFigureSvg } from "./src/math/NoteFigures";
 		import { installObsidianDom } from "./test/render/obsidianDom";
 		installObsidianDom();
 		const stroke = (id: string, y: number) => ({ id, tool: "pen", color: "black", width: 2,
 			createdAt: Number(id.replace(/\\D/g, "")) || 1, bbox: { x: 0, y, width: 8, height: 12 },
 			points: [{ x: 0, y, t: 0, pressure: .5 }, { x: 8, y: y + 12, t: 20, pressure: .5 }] });
 		const state = { commits: [], recognized: 0, count: 0, hold: false, resolve: null, signal: null, modal: null,
+			figures: [], redraws: [], redrawSvg: '<svg viewBox="0 0 4 4"><path d="M0 0 L4 4"/></svg>',
+			sanitize: (svg: string) => sanitizeFigureSvg(svg),
 			// One anchor per section at y = i*100, one stroke per section at y = i*100 + 20:
 			// every anchor after the first lands between strokes, so noteInkSections
 			// yields exactly \`sections\` groups with anchor offsets 0..sections-1.
@@ -34,11 +37,18 @@ beforeAll(async () => {
 						state.recognized++;
 						state.signal = signal;
 						return new Promise(resolve => {
-							const value = "Section " + (++state.count);
+							const text = "Section " + (++state.count);
+							// The bridge guarantees a token per declared figure.
+							const value = { markdown: state.figures.length ? text + "\\n\\n%%figure-1%%" : text,
+								figures: state.figures };
 							if (state.hold) state.resolve = () => resolve(value); else resolve(value);
 						});
 					},
-					(result: unknown) => state.commits.push(result));
+					(result: unknown) => state.commits.push(result),
+					(image: string, feedback: string, previous: string) => {
+						state.redraws.push({ feedback, previous });
+						return Promise.resolve(state.redrawSvg);
+					});
 				state.modal = modal;
 				modal.open();
 			} };
@@ -127,6 +137,81 @@ describe("whole-note handwriting review", () => {
 			document.querySelector('[role="status"]')?.textContent?.includes("more than twelve"));
 		expect(await page.evaluate(() => (window as any).noteTest.recognized)).toBe(0);
 		expect(await page.locator(".handwriting-image-result").count()).toBe(0);
+	});
+
+	it("a detected figure becomes a card and embeds the original drawing by default", async () => {
+		await page.evaluate(() => { (window as any).noteTest.figures = [{ id: 1, box: { left: 0, top: 0, right: 1, bottom: 1 } }]; });
+		await recognizeSections(1);
+		await page.waitForSelector(".handwriting-figure-result img");
+		await page.locator(".handwriting-image-result input[type=checkbox]").first().check();
+		await page.getByRole("button", { name: "Insert into this note" }).click();
+		const commit = await page.evaluate(() => (window as any).noteTest.commits[0]);
+		expect(commit.embeds).toHaveLength(1);
+		// The default embed is the writer's EXACT ink as vector markup.
+		expect(commit.embeds[0].svg.startsWith("<svg")).toBe(true);
+		expect(commit.blocks[0].markdown).toContain(commit.embeds[0].token);
+		expect(commit.combined).toContain(commit.embeds[0].token);
+		// The figure's ink is replaced by the embed, so it IS removed.
+		expect(commit.remove.map((stroke: { id: string }) => stroke.id)).toEqual(["s1"]);
+		expect(errors).toEqual([]);
+	});
+
+	it("keeping a figure as pen ink spares its strokes and strips its token", async () => {
+		await page.evaluate(() => { (window as any).noteTest.figures = [{ id: 1, box: { left: 0, top: 0, right: 1, bottom: 1 } }]; });
+		await recognizeSections(1);
+		await page.locator(".handwriting-figure-result select").selectOption("ink");
+		await page.locator(".handwriting-image-result input[type=checkbox]").first().check();
+		await page.getByRole("button", { name: "Insert into this note" }).click();
+		const commit = await page.evaluate(() => (window as any).noteTest.commits[0]);
+		expect(commit.embeds).toEqual([]);
+		expect(commit.blocks[0].markdown).toBe("Section 1");
+		expect(commit.remove).toEqual([]);
+		expect(errors).toEqual([]);
+	});
+
+	it("a chosen redraw is gated behind accept and iterates on feedback", async () => {
+		await page.evaluate(() => { (window as any).noteTest.figures = [{ id: 1, box: { left: 0, top: 0, right: 1, bottom: 1 } }]; });
+		await recognizeSections(1);
+		await page.locator(".handwriting-figure-result select").selectOption("redraw");
+		// Nothing Codex drew may reach a note unreviewed: inserting before
+		// accepting is refused with guidance, not committed.
+		await page.getByRole("button", { name: "Insert into this note" }).click();
+		expect(await page.locator('[role="status"]').first().textContent()).toContain("Accept the Codex redraw");
+		expect(await page.evaluate(() => (window as any).noteTest.commits.length)).toBe(0);
+		await page.getByRole("button", { name: "Ask Codex to redraw" }).click();
+		await page.waitForFunction(() => {
+			const preview = document.querySelector('img[alt="Codex redraw of the figure"]') as HTMLImageElement | null;
+			return preview !== null && !preview.hidden && preview.src.startsWith("data:image/svg+xml");
+		});
+		expect(await page.evaluate(() => (window as any).noteTest.redraws)).toEqual([{ feedback: "", previous: "" }]);
+		// Request changes iterates on the PREVIOUS redraw, not from scratch.
+		await page.locator('textarea[aria-label="Describe what the redraw should change"]').fill("thicker axes");
+		await page.getByRole("button", { name: "Request changes" }).click();
+		await page.waitForFunction(() => (window as any).noteTest.redraws.length === 2);
+		const svg = await page.evaluate(() => (window as any).noteTest.redrawSvg);
+		expect(await page.evaluate(() => (window as any).noteTest.redraws[1])).toEqual({ feedback: "thicker axes", previous: svg });
+		await page.getByRole("button", { name: "Accept redraw" }).click();
+		await page.getByRole("button", { name: "Insert into this note" }).click();
+		const commit = await page.evaluate(() => (window as any).noteTest.commits[0]);
+		expect(commit.embeds).toEqual([{ token: expect.stringMatching(/^%%figure-hw\d+%%$/), svg }]);
+		expect(errors).toEqual([]);
+	});
+
+	it("the SVG sanitizer strips scripts, handlers and external references", async () => {
+		const cleaned = await page.evaluate(() => (window as any).noteTest.sanitize(
+			'<svg viewBox="0 0 10 10" onload="alert(1)"><script>alert(2)</script>' +
+			'<path d="M0 0 L5 5" fill="url(http://evil.example/x)"/>' +
+			'<a href="https://evil.example"><circle r="2"/></a></svg>'));
+		expect(cleaned).not.toContain("script");
+		expect(cleaned).not.toContain("onload");
+		expect(cleaned).not.toContain("evil.example");
+		expect(cleaned).toContain("<path");
+		const refused = await page.evaluate(() => {
+			try { (window as any).noteTest.sanitize("I am sorry, I cannot draw that."); return null; }
+			catch (error) { return (error as Error).message; }
+		});
+		expect(refused).toContain("did not return an SVG");
+		expect(errors).toEqual([]);
 	});
 
 	it("closing mid-recognition aborts the request and discards its late result", async () => {

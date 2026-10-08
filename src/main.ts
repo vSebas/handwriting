@@ -1,8 +1,11 @@
 import { requestUrl, App, Command, MarkdownRenderChild, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, type SettingGroup, TAbstractFile, TFile, View, WorkspaceLeaf, normalizePath } from "obsidian";
 import { WholeNoteRecognitionModal } from "./math/WholeNoteRecognitionModal";
 import { CodexSelectionModal } from "./math/CodexSelectionModal";
-import { captureWholeNoteInsertionTarget, noteInkSnapshot } from "./math/WholeNoteInk";
-import { checkCodexNote, listCodexModels, recognizeWholeNoteImages, DEFAULT_CODEX_URL } from "./math/CodexService";
+import { captureWholeNoteInsertionTarget, noteInkSnapshot,
+	type NotePlacement, type NoteStrokeSnapshot, type TranscriptionBlock } from "./math/WholeNoteInk";
+import { checkCodexNote, listCodexModels, recognizeWholeNoteImages, redrawFigureImage, DEFAULT_CODEX_URL } from "./math/CodexService";
+import type { FigureEmbed, FigureRedrawer } from "./math/FigureReview";
+import { sanitizeFigureSvg } from "./math/NoteFigures";
 import { LocalCodexService } from "./math/CodexDesktop";
 import { UNPINNED_MODEL_LABEL } from "./math/CodexLimits";
 import {
@@ -1218,6 +1221,49 @@ export default class HandwritingPlugin extends Plugin {
 		// The null-out is load-bearing: stop() is sticky (`stopped` never
 		// resets), so re-enabling the feature must build a fresh instance.
 		this.codexService = null;
+	}
+	/** The redraw loop both transcription modals hand their figure cards.
+	 * Everything Codex draws passes sanitizeFigureSvg before any preview. */
+	private figureRedrawer(): FigureRedrawer {
+		return async (image, feedback, previous, signal, progress) => {
+			if (Platform.isDesktopApp) {
+				progress("Starting the recognition service on this laptop...");
+				await this.startLocalCodexService();
+			}
+			return sanitizeFigureSvg(await redrawFigureImage({ url: this.settings.codexServiceUrl,
+				token: this.settings.codexServiceToken, model: this.settings.codexModel },
+				image, feedback, previous, signal, progress));
+		};
+	}
+	/**
+	 * Commit a reviewed transcription: validate the ink to remove, write each
+	 * figure embed as an .svg beside the note, swap its token for the embed
+	 * link, insert, and only then remove the replaced ink. The insert itself
+	 * re-checks that the note has not changed since the dialog opened, so the
+	 * awaits before it cannot smuggle text into a different note; an embed
+	 * file written before such a refusal stays in the vault, which beats
+	 * inserting links to files that were never written.
+	 */
+	private async insertTranscription(
+		overlay: { validateTranscribedInk(path: string, expected: readonly Pick<NoteStrokeSnapshot, "id" | "signature">[]): void;
+			removeTranscribedInk(path: string, expected: readonly Pick<NoteStrokeSnapshot, "id" | "signature">[]): number },
+		file: TFile, insert: (blocks: TranscriptionBlock[], placement: NotePlacement, combined: string) => void,
+		blocks: TranscriptionBlock[], placement: NotePlacement, combined: string,
+		remove: NoteStrokeSnapshot[], embeds: FigureEmbed[]): Promise<void> {
+		if (remove.length) overlay.validateTranscribedInk(file.path, remove);
+		const links = new Map<string, string>();
+		const base = file.path.replace(/\.md$/, "");
+		for (const embed of embeds) {
+			const target = await this.firstFreePath(n => `${base}.figure-${n}.svg`);
+			await this.app.vault.create(target, embed.svg);
+			links.set(embed.token, `![[${target}]]`);
+		}
+		const resolve = (text: string): string => {
+			for (const [token, link] of links) text = text.split(token).join(link);
+			return text;
+		};
+		insert(blocks.map(block => ({ markdown: resolve(block.markdown), offset: block.offset })), placement, resolve(combined));
+		if (remove.length) overlay.removeTranscribedInk(file.path, remove);
 	}
 	store!: PageStore;
 	settings: HandwritingSettings = { ...DEFAULT_SETTINGS };
@@ -3070,10 +3116,14 @@ export default class HandwritingPlugin extends Plugin {
 						const strokes = surface.kind === "inline"
 							? surface.overlay.selectedStrokesForMath()
 							: surface.controller.selectedStrokesForMath();
-						const source = noteInkSnapshot(strokes);
 						const active = this.app.workspace.activeEditor;
 						const file = surface.kind === "inline" ? active?.file : null;
 						const overlay = surface.kind === "inline" ? surface.overlay : null;
+						// Anchors let replace-ink insert BESIDE the lassoed ink's
+						// own section instead of at the saved cursor.
+						const anchors = overlay && active?.editor && file
+							? overlay.transcriptionAnchors(file.path, active.editor.getValue()) : [];
+						const source = noteInkSnapshot(strokes, anchors);
 						const insert = overlay && active?.editor && file
 							? captureWholeNoteInsertionTarget(active, () => this.app.workspace.activeEditor)
 							: null;
@@ -3086,11 +3136,13 @@ export default class HandwritingPlugin extends Plugin {
 								}
 								return recognizeWholeNoteImages({ url: this.settings.codexServiceUrl, token: this.settings.codexServiceToken,
 									model: this.settings.codexModel }, images, signal, progress);
-							}, insert && overlay && file ? (markdown, replaceInk) => {
-								if (replaceInk) overlay.validateTranscribedInk(file.path, source.strokes);
-								insert([{ markdown, offset: 0 }], "cursor", markdown);
-								if (replaceInk) overlay.removeTranscribedInk(file.path, source.strokes);
-							} : undefined);
+							}, insert && overlay && file ? (markdown, remove, embeds, anchorOffset) => {
+								runDetached(this.insertTranscription(overlay, file, insert,
+									[{ markdown, offset: anchorOffset ?? 0 }],
+									anchorOffset !== null ? "sections" : "cursor", markdown, remove, embeds),
+									"insert lasso transcription", error => new Notice(`Handwriting: ${
+										error instanceof Error ? error.message : "Could not insert the transcription."}`));
+							} : undefined, this.figureRedrawer());
 						this.selectionModal.open();
 					} catch (error) {
 						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read the selected ink."}`);
@@ -3130,10 +3182,11 @@ export default class HandwritingPlugin extends Plugin {
 								return recognizeWholeNoteImages(settings, images, signal, progress);
 							},
 							result => {
-								if (result.remove.length) overlay.validateTranscribedInk(file.path, result.remove);
-								insert(result.blocks, result.placement, result.combined);
-								if (result.remove.length) overlay.removeTranscribedInk(file.path, result.remove);
-							});
+								runDetached(this.insertTranscription(overlay, file, insert, result.blocks,
+									result.placement, result.combined, result.remove, result.embeds),
+									"insert note transcription", error => new Notice(`Handwriting: ${
+										error instanceof Error ? error.message : "Could not insert the transcription."}`));
+							}, this.figureRedrawer());
 						this.wholeNoteModal.open();
 					} catch (error) {
 						new Notice(`Handwriting: ${error instanceof Error ? error.message : "Could not read note ink."}`);
