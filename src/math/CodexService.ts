@@ -1,8 +1,10 @@
 import { requestUrl } from "obsidian";
 import { timerHost } from "../util/RuntimeScheduler";
 import {
-	CLIENT_HEALTH_TIMEOUT_MS, CLIENT_MODELS_TIMEOUT_MS, CLIENT_RECOGNIZE_TIMEOUT_MS, MAX_IMAGES,
+	CLIENT_HEALTH_TIMEOUT_MS, CLIENT_MODELS_TIMEOUT_MS, CLIENT_RECOGNIZE_TIMEOUT_MS,
+	FIGURE_FEEDBACK_MAX_CHARS, MAX_IMAGES,
 } from "./CodexLimits";
+import { coerceFigures, parseFigureFence, type DetectedFigure } from "./NoteFigures";
 
 export const DEFAULT_CODEX_URL = "http://127.0.0.1:8765";
 export interface CodexServiceSettings { url: string; token: string; model?: string }
@@ -54,6 +56,7 @@ async function serviceRequest(settings: CodexServiceSettings, path: "recognize-n
 		if (response.status === 400) throw new Error("The handwriting image is invalid. Try a smaller selection.");
 		if (response.status === 503 && path === "models") throw new Error("The laptop could not read the Codex model list. Check its Codex CLI installation.");
 		if (response.status === 503 || response.status === 404) throw new Error("Update Handwriting on the laptop and sign in to Codex CLI.");
+		if (response.status === 422) throw new Error("Codex misdeclared the drawn figures in this section. Transcribe again, or select a smaller area.");
 		if (response.status === 500) throw new Error("Codex transcription failed. Check the selected model and laptop sign-in.");
 		if (response.status !== 200) throw new Error(`Laptop service failed (HTTP ${response.status}).`);
 		const value: unknown = response.json;
@@ -80,13 +83,38 @@ export async function listCodexModels(settings: CodexServiceSettings): Promise<{
 	return { models: result.models as CodexModelOption[], defaultModel: typeof result.defaultModel === "string" ? result.defaultModel : "Codex CLI default" };
 }
 
+export interface NoteRecognition { markdown: string; figures: DetectedFigure[] }
+
 export async function recognizeWholeNoteImages(settings: CodexServiceSettings, images: string[], signal: AbortSignal,
-	progress: (message: string) => void): Promise<string> {
+	progress: (message: string) => void): Promise<NoteRecognition> {
 	if (signal.aborted) throw new Error("Recognition cancelled.");
 	if (!images.length || images.length > MAX_IMAGES) throw new Error("Select a smaller handwriting area.");
 	progress("Sending the selected handwriting image to Codex...");
 	const result = await serviceRequest(settings, "recognize-note", signal,
 		JSON.stringify(settings.model?.trim() ? { images, model: settings.model.trim() } : { images }));
 	if (typeof result.markdown !== "string" || !result.markdown.trim()) throw new Error("Codex returned no transcription. Try a clearer image selection.");
-	return result.markdown.replace(/\r\n?/g, "\n").trim();
+	const markdown = result.markdown.replace(/\r\n?/g, "\n").trim();
+	// A bridge that answers `figures` already parsed the fence; its markdown
+	// must NOT be re-parsed, or the (now fence-less) tokens read as strays and
+	// vanish. An older bridge forwards the raw answer, so parse it here.
+	if (Array.isArray(result.figures)) return { markdown, figures: coerceFigures(result.figures) };
+	return parseFigureFence(markdown);
+}
+
+/** Ask Codex to redraw ONE figure crop as clean SVG. The caller sanitizes
+ * the markup before showing or saving it; this only moves it. */
+export async function redrawFigureImage(settings: CodexServiceSettings, image: string, feedback: string,
+	previous: string, signal: AbortSignal, progress: (message: string) => void): Promise<string> {
+	if (signal.aborted) throw new Error("Recognition cancelled.");
+	if (feedback.length > FIGURE_FEEDBACK_MAX_CHARS) throw new Error("Shorten the change request; Codex reads at most two thousand characters of it.");
+	progress(feedback ? "Sending your changes to Codex..." : "Asking Codex to redraw the figure...");
+	const body: Record<string, unknown> = { task: "redraw", images: [image] };
+	if (settings.model?.trim()) body.model = settings.model.trim();
+	if (feedback.trim()) body.feedback = feedback.trim();
+	if (previous) body.previous = previous;
+	const result = await serviceRequest(settings, "recognize-note", signal, JSON.stringify(body));
+	if (typeof result.svg !== "string" || !result.svg.trim().startsWith("<svg")) {
+		throw new Error("The laptop did not return a redrawn figure. Update Handwriting on the laptop.");
+	}
+	return result.svg.trim();
 }

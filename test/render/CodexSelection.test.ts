@@ -22,14 +22,23 @@ beforeAll(async () => {
 			createdAt: Number(id.replace(/\\D/g, "")) || 1, bbox: { x: 0, y, width: 8, height: 12 },
 			points: [{ x: 0, y, t: 0, pressure: .5 }, { x: 8, y: y + 12, t: 20, pressure: .5 }] });
 		const state = { inserted: [], images: 0, signal: null, resolve: null, modal: null,
+			figures: [], anchors: [], redraws: [],
+			redrawSvg: '<svg viewBox="0 0 4 4"><path d="M0 0 L4 4"/></svg>',
 			build(withInsert: boolean) {
-				const modal = new CodexSelectionModal({}, noteInkSnapshot([stroke("s1", 0), stroke("s2", 40)]),
+				const modal = new CodexSelectionModal({}, noteInkSnapshot([stroke("s1", 0), stroke("s2", 40)], state.anchors),
 					(images: string[], signal: AbortSignal) => {
 						state.images = images.length;
 						state.signal = signal;
-						return new Promise(resolve => { state.resolve = resolve; });
+						return new Promise(resolve => {
+							state.resolve = (markdown: string) => resolve({ markdown, figures: state.figures });
+						});
 					},
-					withInsert ? (markdown: string, replaceInk: boolean) => state.inserted.push({ markdown, replaceInk }) : undefined);
+					withInsert ? (markdown: string, remove: Array<{ id: string }>, embeds: unknown, anchorOffset: number | null) =>
+						state.inserted.push({ markdown, remove: remove.map(stroke => stroke.id), embeds, anchorOffset }) : undefined,
+					(image: string, feedback: string, previous: string) => {
+						state.redraws.push({ feedback, previous });
+						return Promise.resolve(state.redrawSvg);
+					});
 				state.modal = modal;
 				modal.open();
 			} };
@@ -69,8 +78,56 @@ describe("lasso transcription review", () => {
 		expect(await output().inputValue()).toBe("Line one and $x^2$");
 		await page.locator("input[type=checkbox]").check();
 		await page.getByRole("button", { name: "Insert at saved cursor" }).click();
+		// Without anchors the replacement still goes to the cursor (offset null).
 		expect(await page.evaluate(() => (window as any).selTest.inserted))
-			.toEqual([{ markdown: "Line one and $x^2$", replaceInk: true }]);
+			.toEqual([{ markdown: "Line one and $x^2$", remove: ["s1", "s2"], embeds: [], anchorOffset: null }]);
+		expect(errors).toEqual([]);
+	});
+
+	it("replace-ink inserts beside the ink's own section when the note has anchors", async () => {
+		await page.evaluate(() => {
+			// The snapshot pads the ink's top (y=0) to -12; both anchors sit above it.
+			(window as any).selTest.anchors = [
+				{ offset: 0, y: -80, label: "Start of note" }, { offset: 7, y: -20, label: "After: Heading" }];
+			(window as any).selTest.build(true);
+		});
+		await transcribed("Replaced text");
+		await page.locator("input[type=checkbox]").check();
+		// The button says where the text will actually go.
+		await page.getByRole("button", { name: "Insert beside the ink" }).click();
+		expect(await page.evaluate(() => (window as any).selTest.inserted))
+			.toEqual([{ markdown: "Replaced text", remove: ["s1", "s2"], embeds: [], anchorOffset: 7 }]);
+		expect(errors).toEqual([]);
+	});
+
+	it("a lassoed drawing becomes a figure card whose embed replaces the ink", async () => {
+		await page.evaluate(() => {
+			(window as any).selTest.figures = [{ id: 1, box: { left: 0, top: 0, right: 1, bottom: 1 } }];
+			(window as any).selTest.build(true);
+		});
+		await transcribed("Notes\n\n%%figure-1%%");
+		await page.waitForSelector(".handwriting-figure-result img");
+		await page.locator("input[type=checkbox]").check();
+		await page.getByRole("button", { name: "Insert at saved cursor" }).click();
+		const inserted = await page.evaluate(() => (window as any).selTest.inserted[0]);
+		expect(inserted.embeds).toHaveLength(1);
+		expect(inserted.embeds[0].svg.startsWith("<svg")).toBe(true);
+		expect(inserted.markdown).toContain(inserted.embeds[0].token);
+		expect(inserted.remove).toEqual(["s1", "s2"]);
+		expect(errors).toEqual([]);
+	});
+
+	it("a lassoed drawing kept as pen ink is spared from replacement", async () => {
+		await page.evaluate(() => {
+			(window as any).selTest.figures = [{ id: 1, box: { left: 0, top: 0, right: 1, bottom: 1 } }];
+			(window as any).selTest.build(true);
+		});
+		await transcribed("Notes\n\n%%figure-1%%");
+		await page.locator(".handwriting-figure-result select").selectOption("ink");
+		await page.locator("input[type=checkbox]").first().check();
+		await page.getByRole("button", { name: "Insert at saved cursor" }).click();
+		expect(await page.evaluate(() => (window as any).selTest.inserted))
+			.toEqual([{ markdown: "Notes", remove: [], embeds: [], anchorOffset: null }]);
 		expect(errors).toEqual([]);
 	});
 

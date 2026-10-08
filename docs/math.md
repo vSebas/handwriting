@@ -15,11 +15,26 @@ every section before insertion. **Replace this section's pen ink** removes
 only that section's selected pen strokes after its Markdown is inserted;
 otherwise the original ink stays. Existing text and pasted images are kept.
 
-For a graph beside writing, keep the whole-note replacement toggle off so the
-original graph stays in place. To replace just the writing, lasso only its pen
-strokes and run **Lasso: transcribe handwriting**. That dialog can insert at the
-saved cursor and remove only the selected pen strokes. Any graph outside the
-lasso remains as editable original ink.
+## Drawn figures
+
+Codex marks plots, graphs, diagrams, and sketches as **figures** instead of
+transcribing them. Each detected figure gets its own card in the review
+dialog with three choices:
+
+- **Embed my drawing as an image** (default): the figure's exact pen ink is
+  saved as an `.svg` beside the note and embedded where the figure sat, so a
+  full replacement keeps the drawing.
+- **Redraw with Codex**: Codex redraws the sketch as a clean vector figure.
+  The redraw appears in the card for review first - accept it, or describe a
+  change and send it back as many times as needed. Only an accepted redraw is
+  embedded; your original ink is always the fallback.
+- **Keep it as pen ink only**: nothing is embedded and the figure's strokes
+  are never removed, even when the section's ink is replaced.
+
+The same cards appear in **Lasso: transcribe handwriting** when the lasso
+contains a drawing. With **Replace selected pen ink** on, the lasso dialog
+inserts the transcription beside the ink's own section rather than at the
+saved cursor, so the text succeeds the ink in place.
 
 Follow [the Codex CLI setup](../services/codex/README.md) on the laptop.
 On iPad, set the laptop service URL to its Wi-Fi address and sync or copy the

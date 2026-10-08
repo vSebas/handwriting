@@ -1,10 +1,11 @@
 /// <reference types="node" />
 import { checkCodexNote, type CodexModelOption } from "./CodexService";
 import {
-	EXEC_TIMEOUT_MS, LOGIN_STATUS_TIMEOUT_MS, LOGIN_TIMEOUT_MS, MAX_BODY_BYTES, MAX_IMAGES,
-	MAX_IMAGE_PIXELS, MAX_TRANSCRIPTION_CHARS, MODEL_LIST_MAX_CHARS, MODEL_LIST_TIMEOUT_MS,
-	UNPINNED_MODEL_LABEL,
+	EXEC_TIMEOUT_MS, FIGURE_FEEDBACK_MAX_CHARS, FIGURE_SVG_MAX_CHARS, LOGIN_STATUS_TIMEOUT_MS,
+	LOGIN_TIMEOUT_MS, MAX_BODY_BYTES, MAX_IMAGES, MAX_IMAGE_PIXELS, MAX_TRANSCRIPTION_CHARS,
+	MODEL_LIST_MAX_CHARS, MODEL_LIST_TIMEOUT_MS, UNPINNED_MODEL_LABEL,
 } from "./CodexLimits";
+import { FigureContractError, parseFigureFence, type DetectedFigure } from "./NoteFigures";
 
 const PROMPT = `Transcribe the attached image(s) of handwritten notes into Obsidian Markdown.
 If multiple images are attached, the first is an overview and the rest are
@@ -14,10 +15,45 @@ Transcribe overlapping writing only once. Preserve all legible prose.
 Write equations as valid LaTeX in $...$ or $$...$$. Preserve arrows and clear
 relationships as symbols or concise labels, but do not invent relationships.
 If a word or formula is uncertain, mark the uncertain part as [unclear] rather
-than guessing. Do not describe the task, add a preface, or wrap the result in a
-code fence. Do not use tools or access any files beyond the attached image.
-Return only the Markdown transcription.`;
+than guessing. If part of the handwriting is a drawn figure - a plot, graph,
+diagram, or sketch that is not prose or an equation - do not transcribe or
+describe it: put the exact token %%figure-1%% (then %%figure-2%%, and so on)
+on its own line where the figure belongs, and after the Markdown append one
+fenced block declaring each figure's position in the FIRST attached image:
+\`\`\`figures
+[{"id":1,"box":[0.10,0.25,0.60,0.70]}]
+\`\`\`
+with box as [left,top,right,bottom] fractions of that image's width and
+height. Equations, tables, and text are never figures; append no fenced block
+when there is no drawn figure. Do not describe the task, add a preface, or
+wrap the transcription itself in a code fence. Do not use tools or access any
+files beyond the attached images. Return only the Markdown transcription,
+followed by the figures block when one is needed.`;
+const REDRAW_PROMPT = `The attached image is one hand-drawn figure from handwritten notes - a plot,
+graph, diagram, or sketch. Redraw it as a clean vector figure in SVG markup:
+straight axes and boxes, smooth curves, even spacing, and typeset text in
+place of handwritten labels. Keep every element, label, and relationship from
+the original, and invent nothing that is not drawn. Use dark strokes on no
+background rectangle, with a viewBox sized to the drawing. Use only static
+shapes and text: no script, no foreignObject, no image, no animation, no
+external references, no event attributes. Return only the SVG markup,
+starting with <svg and ending with </svg>, with no code fence and no
+commentary.`;
 const PNG_PREFIX = "data:image/png;base64,";
+
+/** The /recognize-note redraw task: revise rather than transcribe. */
+interface RedrawRequest { feedback: string; previous: string }
+
+function redrawPrompt(redraw: RedrawRequest): string {
+	let prompt = REDRAW_PROMPT;
+	if (redraw.previous) prompt += "\n\nA previous redraw is saved in the working directory as previous.svg;" +
+		" read it and revise that SVG instead of starting over.";
+	if (redraw.feedback) prompt += `\n\nApply this requested change: "${redraw.feedback}"`;
+	prompt += redraw.previous
+		? "\nDo not use tools or access files other than the attached image and previous.svg."
+		: "\nDo not use tools or access any files beyond the attached image.";
+	return prompt;
+}
 
 function desktopNode() {
 	const host = window as Window & { require?: (module: string) => unknown };
@@ -178,7 +214,8 @@ export class LocalCodexService {
 		return { model: null, source: "Codex CLI" };
 	}
 
-	private async recognize(binary: string, images: string[], requestedModel = ""): Promise<string> {
+	private async recognize(binary: string, images: string[], requestedModel = "", redraw?: RedrawRequest):
+		Promise<{ markdown: string; figures: DetectedFigure[] } | { svg: string }> {
 		const { fs, os, path } = desktopNode();
 		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "handwriting-codex-"));
 		try {
@@ -190,17 +227,28 @@ export class LocalCodexService {
 				await fs.promises.writeFile(file, Buffer.from(image.slice(PNG_PREFIX.length), "base64"));
 				args.push("--image", file);
 			}
+			// The previous SVG travels as a FILE, not argv: Windows caps a
+			// command line at 32k characters and a figure can exceed that alone.
+			if (redraw?.previous) await fs.promises.writeFile(path.join(dir, "previous.svg"), redraw.previous, "utf8");
 			const { model } = this.modelSelection(requestedModel);
 			if (model) args.push("--model", model);
-			args.push("--", PROMPT);
+			args.push("--", redraw ? redrawPrompt(redraw) : PROMPT);
 			// A cancel that raced the upload is honoured here, where the spawn
 			// it meant to kill would otherwise begin.
 			if (this.cancelPending) { this.cancelPending = false; throw new Error("Recognition cancelled."); }
 			const code = await this.run(binary, args, EXEC_TIMEOUT_MS, dir, kill => { this.cancelExec = kill; });
 			if (code !== 0) throw new Error("Codex failed.");
-			const markdown = (await fs.promises.readFile(output, "utf8")).trim();
-			if (!markdown || markdown.length > MAX_TRANSCRIPTION_CHARS) throw new Error("Invalid transcription.");
-			return markdown;
+			const answer = (await fs.promises.readFile(output, "utf8")).trim();
+			if (!answer || answer.length > MAX_TRANSCRIPTION_CHARS) throw new Error("Invalid transcription.");
+			if (!redraw) return parseFigureFence(answer);
+			// Unfence before validating: a code fence despite the instructions
+			// is the model's most common slip, not a reason to fail the redraw.
+			const fenced = /^(`{3,}|~{3,})[A-Za-z]*[ \t]*\n([\s\S]*?)\n\1[ \t]*$/.exec(answer);
+			const svg = (fenced ? fenced[2]! : answer).trim();
+			if (!svg.startsWith("<svg") || !svg.endsWith("</svg>") || svg.length > FIGURE_SVG_MAX_CHARS) {
+				throw new Error("Codex did not return an SVG figure.");
+			}
+			return { svg };
 		} finally {
 			this.cancelExec = null;
 			await fs.promises.rm(dir, { recursive: true, force: true });
@@ -298,12 +346,26 @@ export class LocalCodexService {
 							return reply(400, { error: "Invalid or oversized PNG image." });
 						}
 					}
-					reply(200, { markdown: await this.recognize(binary, images as string[], requestedModel as string | undefined) });
+					const task = (body as { task?: unknown })?.task;
+					const feedback = (body as { feedback?: unknown })?.feedback ?? "";
+					const previous = (body as { previous?: unknown })?.previous ?? "";
+					if (task !== undefined && task !== "redraw") return reply(400, { error: "Unknown task." });
+					if (typeof feedback !== "string" || feedback.length > FIGURE_FEEDBACK_MAX_CHARS ||
+						typeof previous !== "string" || previous.length > FIGURE_SVG_MAX_CHARS) {
+						return reply(400, { error: "Invalid redraw request." });
+					}
+					if (task === "redraw" && images.length !== 1) return reply(400, { error: "A redraw takes exactly one figure image." });
+					reply(200, await this.recognize(binary, images as string[], requestedModel as string | undefined,
+						task === "redraw" ? { feedback: feedback.trim(), previous } : undefined));
 				} catch (error) {
 					// The wire gets the generic sentence; the real cause goes to
 					// the console, or a failed transcription is undebuggable.
 					console.error("[handwriting] Codex recognition failed", error);
-					reply(500, { error: "Codex recognition failed. Check sign-in and model access." });
+					// Except a broken figure declaration: that is the MODEL's
+					// contract failure, typed so the client tells the user to
+					// retry or select less, not to check their sign-in.
+					if (error instanceof FigureContractError) reply(422, { error: error.message });
+					else reply(500, { error: "Codex recognition failed. Check sign-in and model access." });
 				}
 				finally { this.active = false; }
 			} catch (error) {

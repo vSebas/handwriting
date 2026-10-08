@@ -3184,6 +3184,30 @@ body.handwriting-boox .handwriting-mobile-tool.is-pressed:not(.is-disabled) {
 	background: white;
 	margin-bottom: var(--size-4-2);
 }
+.handwriting-figure-result {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	padding: var(--size-4-2);
+	margin: var(--size-4-2) 0;
+}
+/* Figure previews show more than the 120px text-section strip: the drawing
+   IS the content here, and the redraw is judged against it visually. */
+.handwriting-figure-result img,
+.handwriting-figure-redraw img {
+	display: block;
+	max-width: 100%;
+	max-height: 220px;
+	background: white;
+	margin-bottom: var(--size-4-2);
+}
+.handwriting-figure-redraw textarea {
+	width: 100%;
+}
+/* The figure cards toggle visibility via the hidden attribute; without this
+   the display:block rules above would override the UA's [hidden] rule. */
+.handwriting-math-modal [hidden] {
+	display: none !important;
+}
 
 .handwriting-math-modal .setting-item-control {
 	flex-wrap: wrap;
