@@ -8,7 +8,7 @@ import process from "node:process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { LocalCodexService } from "./CodexDesktop";
-import { MAX_BODY_BYTES, UNPINNED_MODEL_LABEL } from "./CodexLimits";
+import { FIGURE_FEEDBACK_MAX_CHARS, MAX_BODY_BYTES, UNPINNED_MODEL_LABEL } from "./CodexLimits";
 
 const network = vi.hoisted(() => vi.fn());
 vi.mock("obsidian", async original => ({ ...await original<object>(), requestUrl: network }));
@@ -22,6 +22,10 @@ let settings: { url: string; token: string; model: string };
  * test can hold the single-flight slot and assert what frees it. */
 let holdExec: boolean;
 let heldExec: Array<EventEmitter & { kill: ReturnType<typeof vi.fn> }>;
+/** What the fake `codex exec` writes as its answer. */
+let execOutput: string;
+/** The previous.svg sitting in the exec's working directory when it ran. */
+let previousSvgOnDisk: string | null;
 
 beforeEach(() => {
 	folder = fs.mkdtempSync(path.join(os.tmpdir(), "handwriting-bridge-test-"));
@@ -36,8 +40,10 @@ beforeEach(() => {
 	const fakeProcess = { platform: "win32", env: { PATH: folder } };
 	holdExec = false;
 	heldExec = [];
+	execOutput = "Text and $x^2$";
+	previousSvgOnDisk = null;
 	const child = {
-		spawn: (_binary: string, args: string[]) => {
+		spawn: (_binary: string, args: string[], options?: { cwd?: string }) => {
 			commands.push(args);
 			const stdin = new PassThrough();
 			const stdout = new PassThrough();
@@ -57,7 +63,10 @@ beforeEach(() => {
 			queueMicrotask(() => {
 				if (args[0] === "app-server") return;
 				if (args[0] === "exec") {
-					fs.writeFileSync(args[args.indexOf("--output-last-message") + 1]!, "Text and $x^2$");
+					fs.writeFileSync(args[args.indexOf("--output-last-message") + 1]!, execOutput);
+					// Captured here, before recognize()'s finally removes the dir.
+					const previous = options?.cwd ? path.join(options.cwd, "previous.svg") : null;
+					previousSvgOnDisk = previous && fs.existsSync(previous) ? fs.readFileSync(previous, "utf8") : null;
 					if (holdExec) { heldExec.push(task); return; }
 				}
 				if (args[0] === "login" && args[1] !== "status") signedIn = true;
@@ -100,7 +109,7 @@ describe("desktop Codex bridge", () => {
 		const result = await fetch(base + "/recognize-note", { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
 			body: JSON.stringify({ images: ["data:image/png;base64," + png] }) });
 		expect(result.status).toBe(200);
-		expect(await result.json()).toEqual({ markdown: "Text and $x^2$" });
+		expect(await result.json()).toEqual({ markdown: "Text and $x^2$", figures: [] });
 		expect(commands.some(args => args[0] === "exec" && args.includes("--image") && args.at(-2) === "--" &&
 			args.at(-1)?.startsWith("Transcribe the attached image(s)"))).toBe(true);
 		expect(commands.find(args => args[0] === "exec")?.slice(-4, -2)).toEqual(["--model", "gpt-test"]);
@@ -219,5 +228,58 @@ describe("desktop Codex bridge", () => {
 		const { base } = await startedService();
 		const denied = await fetch(base + "/cancel", { method: "POST" });
 		expect(denied.status).toBe(401);
+	});
+
+	it("parses the figures fence out of a transcription instead of leaking it to the client", async () => {
+		const { base, headers } = await startedService();
+		execOutput = 'Prose above the plot\n\n%%figure-1%%\n\n```figures\n[{"id":1,"box":[0.1,0.2,0.6,0.7]}]\n```';
+		const result = await fetch(base + "/recognize-note", { method: "POST", headers,
+			body: JSON.stringify({ images: [PNG_PIXEL] }) });
+		expect(result.status).toBe(200);
+		expect(await result.json()).toEqual({ markdown: "Prose above the plot\n\n%%figure-1%%",
+			figures: [{ id: 1, box: { left: 0.1, top: 0.2, right: 0.6, bottom: 0.7 } }] });
+	});
+
+	it("redraws a figure with its own prompt, the feedback, and the previous SVG as a file", async () => {
+		const { base, headers } = await startedService();
+		// Fenced despite the instructions - the bridge unfences before validating.
+		execOutput = '```svg\n<svg viewBox="0 0 10 10"><path d="M0 0 L10 10"/></svg>\n```';
+		const result = await fetch(base + "/recognize-note", { method: "POST", headers, body: JSON.stringify({
+			task: "redraw", images: [PNG_PIXEL], feedback: "make the axes thicker",
+			previous: '<svg viewBox="0 0 1 1"/>' }) });
+		expect(result.status).toBe(200);
+		expect(await result.json()).toEqual({ svg: '<svg viewBox="0 0 10 10"><path d="M0 0 L10 10"/></svg>' });
+		const prompt = commands.filter(args => args[0] === "exec").at(-1)!.at(-1)!;
+		expect(prompt.startsWith("The attached image is one hand-drawn figure")).toBe(true);
+		expect(prompt).toContain("make the axes thicker");
+		// The previous SVG travels as a FILE, not argv: Windows caps a command
+		// line at 32k characters and a figure can be most of that by itself.
+		expect(prompt).toContain("previous.svg");
+		expect(previousSvgOnDisk).toBe('<svg viewBox="0 0 1 1"/>');
+	});
+
+	it("rejects malformed redraw requests before any exec spawns", async () => {
+		const { base, headers } = await startedService();
+		const bodies = [
+			{ task: "redraw", images: [PNG_PIXEL, PNG_PIXEL] },
+			{ task: "redraw", images: [PNG_PIXEL], feedback: "x".repeat(FIGURE_FEEDBACK_MAX_CHARS + 1) },
+			{ task: "transcribe-fancy", images: [PNG_PIXEL] },
+		];
+		for (const body of bodies) {
+			const result = await fetch(base + "/recognize-note", { method: "POST", headers, body: JSON.stringify(body) });
+			expect(result.status, JSON.stringify(body).slice(0, 64)).toBe(400);
+		}
+		expect(commands.some(args => args[0] === "exec")).toBe(false);
+	});
+
+	it("answers a typed 500 when the redraw is not SVG, instead of forwarding junk", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { base, headers } = await startedService();
+			execOutput = "Sorry, I cannot draw that.";
+			const result = await fetch(base + "/recognize-note", { method: "POST", headers,
+				body: JSON.stringify({ task: "redraw", images: [PNG_PIXEL] }) });
+			expect(result.status).toBe(500);
+		} finally { logged.mockRestore(); }
 	});
 });
