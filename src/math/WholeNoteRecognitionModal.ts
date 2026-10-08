@@ -188,10 +188,14 @@ export class WholeNoteRecognitionModal extends Modal {
 					// AWAITED: a failed insert (the note changed, an embed write
 					// refused) must land back in this status line with the
 					// reviewed state intact, not close the dialog over a note
-					// that never received the text.
+					// that never received the text. INERT while it runs: the
+					// blocks and removal list are already captured, so an edit
+					// or section removal during the await would commit state
+					// the dialog no longer shows.
 					this.pending = true;
+					this.contentEl.inert = true;
 					try { await this.commit({ blocks, placement: this.placement, combined, remove, embeds }); }
-					finally { this.pending = false; }
+					finally { this.pending = false; this.contentEl.inert = false; }
 					if (this.closed) return;
 					this.close();
 					new Notice(remove.length ? "Handwriting: transcription inserted; selected pen ink removed." : "Handwriting: transcription inserted; original ink kept.");

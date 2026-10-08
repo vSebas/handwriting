@@ -95,9 +95,13 @@ export class CodexSelectionModal extends Modal {
 				const remove = this.replaceInk ? this.source.strokes.filter(stroke => !collected.keepInkIds.has(stroke.id)) : [];
 				// AWAITED: a failed insert must land back in this status line
 				// with the review intact, not close the dialog as a success.
+				// INERT while it runs: the markdown and removal list are
+				// already captured, so edits during the await would commit
+				// state the dialog no longer shows.
 				this.pending = true;
+				this.contentEl.inert = true;
 				try { await this.insert!(markdown, remove, collected.embeds, this.replaceInk ? this.insertionAnchor() : null); }
-				finally { this.pending = false; }
+				finally { this.pending = false; this.contentEl.inert = false; }
 				if (this.closed) return;
 				this.close();
 				new Notice(remove.length ? "Handwriting: transcription inserted; selected pen ink removed." : "Handwriting: transcription inserted; original ink kept.");

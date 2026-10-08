@@ -25,7 +25,7 @@ beforeAll(async () => {
 			points: [{ x: 0, y, t: 0, pressure: .5 }, { x: 8, y: y + 12, t: 20, pressure: .5 }] });
 		const state = { commits: [], recognized: 0, count: 0, hold: false, resolve: null, signal: null, modal: null,
 			figures: [], redraws: [], redrawSvg: '<svg viewBox="0 0 4 4"><path d="M0 0 L4 4"/></svg>',
-			failCommit: false, holdRedraw: false, redrawSignals: [],
+			failCommit: false, holdRedraw: false, redrawSignals: [], releaseCommit: null,
 			sanitize: (svg: string) => sanitizeFigureSvg(svg),
 			// One anchor per section at y = i*100, one stroke per section at y = i*100 + 20:
 			// every anchor after the first lands between strokes, so noteInkSections
@@ -47,6 +47,11 @@ beforeAll(async () => {
 					},
 					(result: unknown) => {
 						if (state.failCommit) return Promise.reject(new Error("The note changed while recognition ran. Copy the result or reopen this dialog."));
+						if (state.releaseCommit === undefined) {
+							return new Promise<void>(resolve => {
+								state.releaseCommit = () => { state.commits.push(result); resolve(); };
+							});
+						}
 						state.commits.push(result);
 					},
 					(image: string, feedback: string, previous: string, signal: AbortSignal) => {
@@ -211,6 +216,20 @@ describe("whole-note handwriting review", () => {
 		await page.waitForFunction(() =>
 			document.querySelector('[role="status"]')?.textContent?.includes("The note changed"));
 		expect(await page.locator(".handwriting-image-result").count()).toBe(2);
+		expect(errors).toEqual([]);
+	});
+
+	it("locks the review while an insert is committing", async () => {
+		await recognizeSections(2);
+		// Arm the holdable commit (undefined = hold; see the harness fake).
+		await page.evaluate(() => { (window as any).noteTest.releaseCommit = undefined; });
+		await page.getByRole("button", { name: "Insert into this note" }).click();
+		// The blocks and removal list are captured at click time, so every
+		// review control must be dead until the commit settles - a section
+		// removed during the await would still have inserted.
+		await page.waitForFunction(() => (window as any).noteTest.modal.contentEl.inert === true);
+		await page.evaluate(() => (window as any).noteTest.releaseCommit());
+		await page.waitForFunction(() => (window as any).noteTest.commits.length === 1);
 		expect(errors).toEqual([]);
 	});
 
