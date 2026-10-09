@@ -25,9 +25,14 @@ dialog with three choices:
   saved as an `.svg` beside the note and embedded where the figure sat, so a
   full replacement keeps the drawing.
 - **Redraw with Codex**: Codex redraws the sketch as a clean vector figure.
-  The redraw appears in the card for review first - accept it, or describe a
-  change and send it back as many times as needed. Only an accepted redraw is
-  embedded; your original ink is always the fallback.
+  Each redraw automatically carries the figure's surroundings as context -
+  the section's transcribed text, its ink overview, and up to two images
+  already placed in that part of the note - so Codex knows what the drawing
+  is supposed to be (context is reference material only; it is told never to
+  add data the drawing does not show). The redraw appears in the card for
+  review first - accept it, or describe a change and send it back as many
+  times as needed. Only an accepted redraw is embedded; your original ink is
+  always the fallback.
 - **Keep it as pen ink only**: nothing is embedded and the figure's strokes
   are never removed, even when the section's ink is replaced.
 

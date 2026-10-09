@@ -22,8 +22,12 @@ import type { NoteStrokeSnapshot } from "./WholeNoteInk";
 
 export type FigureChoice = "original" | "redraw" | "ink";
 export interface FigureEmbed { token: string; svg: string }
-export type FigureRedrawer = (image: string, feedback: string, previous: string, signal: AbortSignal,
-	progress: (message: string) => void) => Promise<string>;
+/** `images[0]` is the figure crop; the rest are context images. */
+export type FigureRedrawer = (images: string[], feedback: string, previous: string, context: string,
+	signal: AbortSignal, progress: (message: string) => void) => Promise<string>;
+/** What the note knows about a figure's surroundings, gathered at redraw
+ * time so edits to the reviewed Markdown are included. */
+export interface RedrawContext { text: string; images: string[] }
 
 export interface ReviewFigure {
 	/** The unique placeholder sitting in the reviewed Markdown. */
@@ -96,9 +100,12 @@ export function collectFigureEmbeds(figures: readonly ReviewFigure[], hasToken: 
 
 const svgDataUrl = (svg: string): string => "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
 
-/** One figure's card: preview, the three-way choice, and the redraw loop. */
+/** One figure's card: preview, the three-way choice, and the redraw loop.
+ * `context` is read fresh per request and is BEST-EFFORT: a redraw never
+ * fails because its surroundings could not be gathered. */
 export function renderFigureCard(host: HTMLElement, figure: ReviewFigure,
-	redraw: FigureRedrawer | undefined, signal: AbortSignal): void {
+	redraw: FigureRedrawer | undefined, signal: AbortSignal,
+	context?: () => Promise<RedrawContext>): void {
 	const card = host.createDiv({ cls: "handwriting-figure-result" });
 	card.createEl("img", { attr: { src: figure.image, alt: "Detected drawn figure" } });
 	new Setting(card).setName(`Drawn figure (${figure.strokes.length} strokes)`)
@@ -124,9 +131,15 @@ export function renderFigureCard(host: HTMLElement, figure: ReviewFigure,
 		figure.accepted = false;
 		paint();
 		try {
+			let around: RedrawContext = { text: "", images: [] };
+			if (context) { try { around = await context(); } catch { /* best-effort */ } }
+			// The context gather awaited: a card removed or a modal closed in
+			// the meantime must not go on to start the laptop service.
+			if (signal.aborted) throw new Error("Recognition cancelled.");
 			// A change request iterates on the previous redraw; the plain
 			// redraw button always starts fresh from the original drawing.
-			figure.redrawSvg = await redraw(figure.image, text, text ? figure.redrawSvg ?? "" : "",
+			figure.redrawSvg = await redraw([figure.image, ...around.images], text,
+				text ? figure.redrawSvg ?? "" : "", around.text,
 				signal, message => status.setText(message));
 			feedback.value = "";
 			status.setText("Review the redraw: accept it, or describe a change and send it.");

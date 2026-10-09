@@ -3,6 +3,7 @@ import { collectFigureEmbeds, renderFigureCard, reviewFiguresFor,
 	type FigureEmbed, type FigureRedrawer, type ReviewFigure } from "./FigureReview";
 import { noteInkImage, noteInkTiles } from "./MathInkImage";
 import { stripFigureTokens, stripTokens, type DetectedFigure } from "./NoteFigures";
+import { sectionContextRange } from "./NoteImageContext";
 import { imageSelectionBounds, noteInkSections, type NoteInkSource, type NotePlacement, type NoteStrokeSnapshot } from "./WholeNoteInk";
 
 interface ReviewBlock {
@@ -42,7 +43,8 @@ export class WholeNoteRecognitionModal extends Modal {
 	private figureSeq = 0;
 
 	constructor(app: App, private source: NoteInkSource, private recognize: NoteImageRecognizer,
-		private commit: (result: NoteCommit) => void | Promise<void>, private redraw?: FigureRedrawer) { super(app); }
+		private commit: (result: NoteCommit) => void | Promise<void>, private redraw?: FigureRedrawer,
+		private noteImages?: (from: number, to: number | null) => Promise<string[]>) { super(app); }
 
 	onOpen(): void {
 		this.abort = new AbortController();
@@ -229,7 +231,17 @@ export class WholeNoteRecognitionModal extends Modal {
 		const block: ReviewBlock = { value, card, field, offset, suggestedOffset: offset,
 			placementSelect: null, strokes, replaceInk: false, figures, abort: new AbortController() };
 		this.blocks.push(block);
-		for (const figure of figures) renderFigureCard(card, figure, this.redraw, block.abort.signal);
+		// Context is read at REDRAW time, so edits to the reviewed Markdown
+		// ride along: the section's text, its ink overview, and any images
+		// already placed around the section in the note.
+		const context = async () => {
+			const range = this.contextRange(block.offset);
+			return {
+				text: stripFigureTokens(this.blockMarkdown(block)),
+				images: [image, ...(this.noteImages ? await this.noteImages(range.from, range.to) : [])],
+			};
+		};
+		for (const figure of figures) renderFigureCard(card, figure, this.redraw, block.abort.signal, context);
 		field.addEventListener("input", () => { block.value = field.value; this.updateOutput(); });
 		new Setting(card).setName("Mixed Markdown")
 			.addDropdown(dropdown => {
@@ -262,6 +274,10 @@ export class WholeNoteRecognitionModal extends Modal {
 					this.syncReplacementPlacement();
 				}));
 		this.updateOutput();
+	}
+
+	private contextRange(offset: number): { from: number; to: number | null } {
+		return sectionContextRange(this.source.anchors.map(anchor => anchor.offset), offset);
 	}
 
 	private syncReplacementPlacement(): void {

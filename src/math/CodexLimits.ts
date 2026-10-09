@@ -33,6 +33,14 @@ export const MAX_FIGURES = 12;
 export const FIGURE_SVG_MAX_CHARS = 100_000;
 /** Cap on the change-request text a redraw carries back to Codex. */
 export const FIGURE_FEEDBACK_MAX_CHARS = 2_000;
+/** Cap on the surrounding-transcription context sent with a redraw; the
+ * client truncates to this, the bridge refuses beyond it. */
+export const FIGURE_CONTEXT_MAX_CHARS = 4_000;
+/** Images per redraw request: the figure crop, the section ink overview,
+ * and up to two images already embedded in the note near the figure. */
+export const MAX_REDRAW_IMAGES = 4;
+/** Note-embedded context images per redraw (counted inside MAX_REDRAW_IMAGES). */
+export const MAX_NOTE_CONTEXT_IMAGES = 2;
 
 /** One `codex exec` transcription, spawn to exit. */
 export const EXEC_TIMEOUT_MS = 240_000;

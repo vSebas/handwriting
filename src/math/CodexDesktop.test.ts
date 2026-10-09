@@ -8,7 +8,7 @@ import process from "node:process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { LocalCodexService } from "./CodexDesktop";
-import { FIGURE_FEEDBACK_MAX_CHARS, MAX_BODY_BYTES, UNPINNED_MODEL_LABEL } from "./CodexLimits";
+import { FIGURE_CONTEXT_MAX_CHARS, FIGURE_FEEDBACK_MAX_CHARS, MAX_BODY_BYTES, UNPINNED_MODEL_LABEL } from "./CodexLimits";
 
 const network = vi.hoisted(() => vi.fn());
 vi.mock("obsidian", async original => ({ ...await original<object>(), requestUrl: network }));
@@ -240,18 +240,25 @@ describe("desktop Codex bridge", () => {
 			figures: [{ id: 1, box: { left: 0.1, top: 0.2, right: 0.6, bottom: 0.7 } }] });
 	});
 
-	it("redraws a figure with its own prompt, the feedback, and the previous SVG as a file", async () => {
+	it("redraws a figure with its own prompt, feedback, context, and the previous SVG as a file", async () => {
 		const { base, headers } = await startedService();
 		// Fenced despite the instructions - the bridge unfences before validating.
 		execOutput = '```svg\n<svg viewBox="0 0 10 10"><path d="M0 0 L10 10"/></svg>\n```';
 		const result = await fetch(base + "/recognize-note", { method: "POST", headers, body: JSON.stringify({
-			task: "redraw", images: [PNG_PIXEL], feedback: "make the axes thicker",
+			task: "redraw", images: [PNG_PIXEL, PNG_PIXEL], feedback: "make the axes thicker",
+			context: "a velocity-time plot for the braking phase",
 			previous: '<svg viewBox="0 0 1 1"/>' }) });
 		expect(result.status).toBe(200);
 		expect(await result.json()).toEqual({ svg: '<svg viewBox="0 0 10 10"><path d="M0 0 L10 10"/></svg>' });
-		const prompt = commands.filter(args => args[0] === "exec").at(-1)!.at(-1)!;
-		expect(prompt.startsWith("The attached image is one hand-drawn figure")).toBe(true);
+		const exec = commands.filter(args => args[0] === "exec").at(-1)!;
+		// Both images attached: the figure crop first, the context after.
+		expect(exec.filter(arg => arg === "--image")).toHaveLength(2);
+		const prompt = exec.at(-1)!;
+		expect(prompt.startsWith("The FIRST attached image is one hand-drawn figure")).toBe(true);
 		expect(prompt).toContain("make the axes thicker");
+		// Context is quoted material, fenced off from the instructions.
+		expect(prompt).toContain("a velocity-time plot for the braking phase");
+		expect(prompt).toContain("only to understand what the figure depicts");
 		// The previous SVG travels as a FILE, not argv: Windows caps a command
 		// line at 32k characters and a figure can be most of that by itself.
 		expect(prompt).toContain("previous.svg");
@@ -261,8 +268,9 @@ describe("desktop Codex bridge", () => {
 	it("rejects malformed redraw requests before any exec spawns", async () => {
 		const { base, headers } = await startedService();
 		const bodies = [
-			{ task: "redraw", images: [PNG_PIXEL, PNG_PIXEL] },
+			{ task: "redraw", images: [PNG_PIXEL, PNG_PIXEL, PNG_PIXEL, PNG_PIXEL, PNG_PIXEL] },
 			{ task: "redraw", images: [PNG_PIXEL], feedback: "x".repeat(FIGURE_FEEDBACK_MAX_CHARS + 1) },
+			{ task: "redraw", images: [PNG_PIXEL], context: "y".repeat(FIGURE_CONTEXT_MAX_CHARS + 1) },
 			{ task: "transcribe-fancy", images: [PNG_PIXEL] },
 		];
 		for (const body of bodies) {

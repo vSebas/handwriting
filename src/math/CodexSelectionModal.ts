@@ -3,6 +3,7 @@ import { collectFigureEmbeds, renderFigureCard, reviewFiguresFor,
 	type FigureEmbed, type FigureRedrawer, type ReviewFigure } from "./FigureReview";
 import { noteInkImage, noteInkTiles } from "./MathInkImage";
 import { stripFigureTokens, stripTokens } from "./NoteFigures";
+import { sectionContextRange } from "./NoteImageContext";
 import type { NoteImageRecognizer } from "./WholeNoteRecognitionModal";
 import type { NoteInkSource, NoteStrokeSnapshot } from "./WholeNoteInk";
 
@@ -24,7 +25,8 @@ export class CodexSelectionModal extends Modal {
 	constructor(app: App, private source: NoteInkSource, private recognize: NoteImageRecognizer,
 		private insert?: (markdown: string, remove: NoteStrokeSnapshot[], embeds: FigureEmbed[],
 			anchorOffset: number | null) => void | Promise<void>,
-		private redraw?: FigureRedrawer) { super(app); }
+		private redraw?: FigureRedrawer,
+		private noteImages?: (from: number, to: number | null) => Promise<string[]>) { super(app); }
 
 	onOpen(): void {
 		this.closed = false;
@@ -55,7 +57,20 @@ export class CodexSelectionModal extends Modal {
 						this.source.strokes, () => `hw${++this.figureSeq}`);
 					this.figures = review.figures;
 					this.output.value = review.markdown;
-					for (const figure of review.figures) renderFigureCard(this.figureList, figure, this.redraw, this.figureAbort.signal);
+					// Context read at REDRAW time: the reviewed Markdown as
+					// edited, the lasso's ink overview, and any images already
+					// placed in the ink's own note section.
+					const context = async () => {
+						const anchor = this.insertionAnchor();
+						const range = anchor !== null ? this.contextRange(anchor) : null;
+						return {
+							text: stripFigureTokens(this.output.value),
+							images: [noteInkImage(this.source.ink, this.source.bounds),
+								...(this.noteImages && range
+									? await this.noteImages(range.from, range.to) : [])],
+						};
+					};
+					for (const figure of review.figures) renderFigureCard(this.figureList, figure, this.redraw, this.figureAbort.signal, context);
 				} else {
 					// The copy-only surface (PDF ink) writes no embed files, so
 					// no figure token may reach the clipboard.
@@ -125,6 +140,10 @@ export class CodexSelectionModal extends Modal {
 		if (!this.source.anchors.length) return null;
 		const above = [...this.source.anchors].reverse().find(anchor => anchor.y <= this.source.bounds.top);
 		return (above ?? this.source.anchors[0]!).offset;
+	}
+
+	private contextRange(offset: number): { from: number; to: number | null } {
+		return sectionContextRange(this.source.anchors.map(anchor => anchor.offset), offset);
 	}
 
 	onClose(): void {

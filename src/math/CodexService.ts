@@ -2,7 +2,7 @@ import { requestUrl } from "obsidian";
 import { timerHost } from "../util/RuntimeScheduler";
 import {
 	CLIENT_HEALTH_TIMEOUT_MS, CLIENT_MODELS_TIMEOUT_MS, CLIENT_RECOGNIZE_TIMEOUT_MS,
-	FIGURE_FEEDBACK_MAX_CHARS, MAX_IMAGES,
+	FIGURE_CONTEXT_MAX_CHARS, FIGURE_FEEDBACK_MAX_CHARS, MAX_BODY_BYTES, MAX_IMAGES, MAX_REDRAW_IMAGES,
 } from "./CodexLimits";
 import { coerceFigures, parseFigureFence, type DetectedFigure } from "./NoteFigures";
 
@@ -101,18 +101,34 @@ export async function recognizeWholeNoteImages(settings: CodexServiceSettings, i
 	return parseFigureFence(markdown);
 }
 
-/** Ask Codex to redraw ONE figure crop as clean SVG. The caller sanitizes
- * the markup before showing or saving it; this only moves it. */
-export async function redrawFigureImage(settings: CodexServiceSettings, image: string, feedback: string,
-	previous: string, signal: AbortSignal, progress: (message: string) => void): Promise<string> {
+/** Ask Codex to redraw a figure as clean SVG. `images[0]` is the figure
+ * crop; the rest are context (the section's ink overview, images already in
+ * the note), and `context` is the surrounding transcription - both gathered
+ * automatically, so overlength context is truncated rather than refused.
+ * The caller sanitizes the returned markup; this only moves it. */
+export async function redrawFigureImage(settings: CodexServiceSettings, images: string[], feedback: string,
+	previous: string, context: string, signal: AbortSignal, progress: (message: string) => void): Promise<string> {
 	if (signal.aborted) throw new Error("Recognition cancelled.");
+	if (!images.length) throw new Error("The figure image is missing. Transcribe the selection again.");
 	if (feedback.length > FIGURE_FEEDBACK_MAX_CHARS) throw new Error("Shorten the change request; Codex reads at most two thousand characters of it.");
 	progress(feedback ? "Sending your changes to Codex..." : "Asking Codex to redraw the figure...");
-	const body: Record<string, unknown> = { task: "redraw", images: [image] };
+	const sized = images.slice(0, MAX_REDRAW_IMAGES);
+	const body: Record<string, unknown> = { task: "redraw", images: sized };
 	if (settings.model?.trim()) body.model = settings.model.trim();
 	if (feedback.trim()) body.feedback = feedback.trim();
 	if (previous) body.previous = previous;
-	const result = await serviceRequest(settings, "recognize-note", signal, JSON.stringify(body));
+	if (context.trim()) body.context = context.trim().slice(0, FIGURE_CONTEXT_MAX_CHARS);
+	// Context images are optional by definition: drop from the tail until the
+	// request fits the bridge's body cap, instead of letting an oversized
+	// optional ride-along 413 the whole redraw. Only the figure crop stays.
+	// Measured as SERIALIZED UTF-8 - CJK context and JSON escaping in the
+	// previous SVG make character counts undercount real bytes.
+	let payload = JSON.stringify(body);
+	while (sized.length > 1 && new TextEncoder().encode(payload).byteLength > MAX_BODY_BYTES) {
+		sized.pop();
+		payload = JSON.stringify(body);
+	}
+	const result = await serviceRequest(settings, "recognize-note", signal, payload);
 	if (typeof result.svg !== "string" || !result.svg.trim().startsWith("<svg")) {
 		throw new Error("The laptop did not return a redrawn figure. Update Handwriting on the laptop.");
 	}
