@@ -159,10 +159,12 @@ export function opaqueFigureSvg(svg: string): string {
 		? `<rect x="${sides[0]}" y="${sides[1]}" width="${sides[2]}" height="${sides[3]}" fill="#ffffff"/>`
 		: '<rect width="100%" height="100%" fill="#ffffff"/>';
 	const at = open.index + open[0].length;
-	// Idempotent: a change request iterates on a previous redraw that already
-	// carries the backdrop (or Codex copied it), and rects must not pile up.
-	if (/^<rect [^>]*fill="#ffffff"\s*\/>/.test(svg.slice(at))) return svg;
-	return svg.slice(0, at) + rect + svg.slice(at);
+	// REPLACE a leading backdrop rather than trust or stack it: a change
+	// request iterates on a previous redraw that already carries one, and a
+	// revision that grew the viewBox while keeping the old rect would leave
+	// the new area transparent (review finding, 2026-10-08).
+	const rest = svg.slice(at).replace(/^(?:<rect [^>]*fill="#ffffff"\s*\/>)+/, "");
+	return svg.slice(0, at) + rect + rest;
 }
 
 /** Static shapes and text only. No script, no foreignObject (arbitrary HTML),

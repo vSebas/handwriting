@@ -88,9 +88,13 @@ describe("opaque figure embeds", () => {
 		expect(opaqueFigureSvg('<svg viewBox="a b c d"><path d="M0 0"/></svg>'))
 			.toContain('<rect width="100%" height="100%" fill="#ffffff"/>');
 	});
-	it("does not pile up backdrops across redraw iterations", () => {
+	it("replaces an existing backdrop instead of stacking or trusting it", () => {
 		const once = opaqueFigureSvg('<svg viewBox="0 0 4 4"><path d="M0 0"/></svg>');
 		expect(opaqueFigureSvg(once)).toBe(once);
+		// A revision that grew the viewBox while keeping the old backdrop
+		// would leave the new area transparent; the rect must track the box.
+		expect(opaqueFigureSvg('<svg viewBox="0 0 200 100"><rect x="0" y="0" width="100" height="100" fill="#ffffff"/><path d="M0 0"/></svg>'))
+			.toBe('<svg viewBox="0 0 200 100"><rect x="0" y="0" width="200" height="100" fill="#ffffff"/><path d="M0 0"/></svg>');
 	});
 });
 
