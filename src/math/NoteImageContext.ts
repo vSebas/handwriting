@@ -15,7 +15,10 @@
 import type { App, TFile } from "obsidian";
 import { MAX_NOTE_CONTEXT_IMAGES, RENDER_MAX_EDGE_PX } from "./CodexLimits";
 
-const IMAGE_EXTENSIONS = /\.(png|jpe?g|webp|gif|bmp)$/i;
+/** Only formats whose declared dimensions the header reveals BEFORE any
+ * decode (see declaredImagePixels): a compressed bomb in a format we cannot
+ * pre-measure would OOM the renderer, so WebP/BMP are simply not context. */
+const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif)$/i;
 /** Skip a source file larger than this; context is not worth a slow upload. */
 const MAX_SOURCE_BYTES = 6 * 1024 * 1024;
 /** Refuse to DECODE beyond this many pixels: a highly compressed 20k x 20k
@@ -30,6 +33,9 @@ export function declaredImagePixels(bytes: Uint8Array): number | null {
 	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	if (bytes.length > 24 && view.getUint32(0) === 0x89504e47) {
 		return view.getUint32(16) * view.getUint32(20);
+	}
+	if (bytes.length > 10 && view.getUint32(0) === 0x47494638) {
+		return view.getUint16(6, true) * view.getUint16(8, true);
 	}
 	if (bytes.length > 4 && view.getUint16(0) === 0xffd8) {
 		let at = 2;
@@ -60,15 +66,7 @@ export function sectionContextRange(anchorOffsets: readonly number[], offset: nu
  * Markdown `![](target)` forms, deduped in order, capped. External URLs are
  * not context this plugin fetches. */
 export function embeddedImageLinks(markdown: string, from: number, to: number | null): string[] {
-	// Code fences, inline code, Obsidian comments and HTML comments do not
-	// RENDER an embed, so a literal ![[private.png]] inside an example must
-	// not quietly upload that file as context. An unterminated region strips
-	// to the end of the slice - over-stripping context is the safe direction.
-	const slice = markdown.slice(Math.max(0, from), to ?? markdown.length)
-		.replace(/(`{3,}|~{3,})[\s\S]*?(\1|$)/g, "")
-		.replace(/`[^`\n]*`/g, "")
-		.replace(/%%[\s\S]*?(%%|$)/g, "")
-		.replace(/<!--[\s\S]*?(-->|$)/g, "");
+	const slice = visibleMarkdown(markdown.slice(Math.max(0, from), to ?? markdown.length));
 	// Collected WITH positions: the nearest images should survive the cap,
 	// not whichever syntax happened to be scanned first.
 	const found: Array<{ at: number; link: string }> = [];
@@ -86,6 +84,35 @@ export function embeddedImageLinks(markdown: string, from: number, to: number | 
 		seen.add(link);
 		return true;
 	}).slice(0, MAX_NOTE_CONTEXT_IMAGES);
+}
+
+/**
+ * Code and comments do not RENDER an embed, so a literal ![[private.png]]
+ * inside an example must not quietly upload that file as context. Fences and
+ * indented code go line by line, mirroring markdownBlockAnchors' fence rule,
+ * because a regex treating an inline ~~~ span as a fence opener swallowed
+ * every real embed after it (review finding, 2026-10-08). Stripped spans
+ * leave a SPACE behind: deleting !<!-- x -->[[a.png]] outright would JOIN
+ * the remains into an embed that was never in the note. Unterminated regions
+ * strip to the end - over-stripping context is the safe direction.
+ */
+function visibleMarkdown(slice: string): string {
+	const lines: string[] = [];
+	let fence: string | null = null;
+	for (const line of slice.split("\n")) {
+		const marker = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
+		if (fence) {
+			if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+			continue;
+		}
+		if (marker) { fence = marker; continue; }
+		if (/^(?: {4}|\t)/.test(line)) continue;
+		lines.push(line);
+	}
+	return lines.join("\n")
+		.replace(/(`+)[\s\S]*?\1/g, " ")
+		.replace(/%%[\s\S]*?(%%|$)/g, " ")
+		.replace(/<!--[\s\S]*?(-->|$)/g, " ");
 }
 
 /** Resolve, decode and downscale each link to a PNG data URL the bridge

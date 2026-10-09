@@ -7,9 +7,10 @@ describe("note-embedded image links as redraw context", () => {
 		"# Kinematics",            // offset 0
 		"![[slide one.png|300]]",  // wiki embed with size
 		"![alt](plots/v-t%20graph.jpg \"title\")",
-		"![[Sketch.webp#heading]]",
+		"![[Sketch.gif#heading]]",
 		"![external](https://example.com/x.png)",
 		"![[notes.pdf]]",          // not an image
+		"![[photo.webp]]",         // no pre-decode size check: not context
 		"![[slide one.png]]",      // duplicate target
 	].join("\n");
 
@@ -17,15 +18,15 @@ describe("note-embedded image links as redraw context", () => {
 		expect(embeddedImageLinks(note, 0, null)).toEqual(["slide one.png", "plots/v-t graph.jpg"]);
 	});
 
-	it("ignores external URLs and non-image embeds entirely", () => {
+	it("ignores external URLs, non-images, and formats without a readable header size", () => {
 		const links = embeddedImageLinks(note, 0, null);
-		expect(links.some(link => link.includes("example.com") || link.endsWith(".pdf"))).toBe(false);
+		expect(links.some(link => link.includes("example.com") || link.endsWith(".pdf") || link.endsWith(".webp"))).toBe(false);
 	});
 
 	it("respects the slice bounds, so only the figure's own section contributes", () => {
 		const start = note.indexOf("![[Sketch");
-		expect(embeddedImageLinks(note, start, start + "![[Sketch.webp#heading]]".length))
-			.toEqual(["Sketch.webp"]);
+		expect(embeddedImageLinks(note, start, start + "![[Sketch.gif#heading]]".length))
+			.toEqual(["Sketch.gif"]);
 		expect(embeddedImageLinks(note, 0, start)).toEqual(["slide one.png", "plots/v-t graph.jpg"]);
 	});
 
@@ -40,12 +41,23 @@ describe("note-embedded image links as redraw context", () => {
 		const hidden = [
 			"```md", "![[in-fence.png]]", "```",
 			"Inline `![[in-code.png]]` span.",
+			"Double ``![[in-double.png]] ` still code`` span.",
+			"    ![[in-indented-code.png]]",
 			"%%![[in-comment.png]]%%",
 			"<!-- ![[in-html.png]] -->",
 			"![[visible.png]]",
 			"~~~", "![[unterminated.png]]",
 		].join("\n");
 		expect(embeddedImageLinks(hidden, 0, null)).toEqual(["visible.png"]);
+	});
+
+	it("neither manufactures embeds nor swallows them while stripping", () => {
+		// Deleting a comment outright would JOIN `!` and `[[...]]` into an
+		// embed that was never in the note...
+		expect(embeddedImageLinks("!<!-- note to self -->[[private.png]]", 0, null)).toEqual([]);
+		// ...and an inline ~~~ span must not read as an unterminated fence
+		// that swallows every real embed after it.
+		expect(embeddedImageLinks("The `~~~` marker, then\n\n![[slide.png]]", 0, null)).toEqual(["slide.png"]);
 	});
 });
 
@@ -61,6 +73,9 @@ describe("context image safety", () => {
 		// Minimal JPEG: SOI, then an SOF0 segment declaring 300 x 200.
 		const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0x2c, 0x00, 0xc8, 0x03, 0, 0, 0, 0, 0, 0, 0, 0]);
 		expect(declaredImagePixels(jpeg)).toBe(300 * 200);
+		// GIF header: little-endian logical screen size at offsets 6 and 8.
+		const gif = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x40, 0x01, 0xf0, 0x00, 0, 0]);
+		expect(declaredImagePixels(gif)).toBe(320 * 240);
 		expect(declaredImagePixels(new Uint8Array([1, 2, 3]))).toBeNull();
 	});
 

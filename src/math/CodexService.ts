@@ -112,18 +112,23 @@ export async function redrawFigureImage(settings: CodexServiceSettings, images: 
 	if (!images.length) throw new Error("The figure image is missing. Transcribe the selection again.");
 	if (feedback.length > FIGURE_FEEDBACK_MAX_CHARS) throw new Error("Shorten the change request; Codex reads at most two thousand characters of it.");
 	progress(feedback ? "Sending your changes to Codex..." : "Asking Codex to redraw the figure...");
-	// Context images are optional by definition: drop from the tail until the
-	// request fits the bridge's body cap, instead of letting an oversized
-	// optional ride-along 413 the whole redraw. Only the figure crop stays.
 	const sized = images.slice(0, MAX_REDRAW_IMAGES);
-	while (sized.length > 1 && sized.reduce((total, image) => total + image.length, 0) +
-		previous.length + context.length + 4_096 > MAX_BODY_BYTES) sized.pop();
 	const body: Record<string, unknown> = { task: "redraw", images: sized };
 	if (settings.model?.trim()) body.model = settings.model.trim();
 	if (feedback.trim()) body.feedback = feedback.trim();
 	if (previous) body.previous = previous;
 	if (context.trim()) body.context = context.trim().slice(0, FIGURE_CONTEXT_MAX_CHARS);
-	const result = await serviceRequest(settings, "recognize-note", signal, JSON.stringify(body));
+	// Context images are optional by definition: drop from the tail until the
+	// request fits the bridge's body cap, instead of letting an oversized
+	// optional ride-along 413 the whole redraw. Only the figure crop stays.
+	// Measured as SERIALIZED UTF-8 - CJK context and JSON escaping in the
+	// previous SVG make character counts undercount real bytes.
+	let payload = JSON.stringify(body);
+	while (sized.length > 1 && new TextEncoder().encode(payload).byteLength > MAX_BODY_BYTES) {
+		sized.pop();
+		payload = JSON.stringify(body);
+	}
+	const result = await serviceRequest(settings, "recognize-note", signal, payload);
 	if (typeof result.svg !== "string" || !result.svg.trim().startsWith("<svg")) {
 		throw new Error("The laptop did not return a redrawn figure. Update Handwriting on the laptop.");
 	}
