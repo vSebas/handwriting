@@ -158,8 +158,10 @@ describe("whole-note handwriting review", () => {
 		await page.getByRole("button", { name: "Insert into this note" }).click();
 		const commit = await page.evaluate(() => (window as any).noteTest.commits[0]);
 		expect(commit.embeds).toHaveLength(1);
-		// The default embed is the writer's EXACT ink as vector markup.
+		// The default embed is the writer's EXACT ink as vector markup, on an
+		// opaque backdrop so a dark theme cannot swallow it.
 		expect(commit.embeds[0].svg.startsWith("<svg")).toBe(true);
+		expect(commit.embeds[0].svg).toContain('fill="#ffffff"');
 		expect(commit.blocks[0].markdown).toContain(commit.embeds[0].token);
 		expect(commit.combined).toContain(commit.embeds[0].token);
 		// The figure's ink is replaced by the embed, so it IS removed.
@@ -202,13 +204,17 @@ describe("whole-note handwriting review", () => {
 		await page.locator('textarea[aria-label="Describe what the redraw should change"]').fill("thicker axes");
 		await page.getByRole("button", { name: "Request changes" }).click();
 		await page.waitForFunction(() => (window as any).noteTest.redraws.length === 2);
+		// The previous sent back for iteration, and the embed that commits,
+		// are the BACKED redraw: opaque white rect behind Codex's shapes.
 		const svg = await page.evaluate(() => (window as any).noteTest.redrawSvg);
+		const backed = '<svg viewBox="0 0 4 4"><rect x="0" y="0" width="4" height="4" fill="#ffffff"/><path d="M0 0 L4 4"/></svg>';
+		expect(svg.includes("ffffff")).toBe(false);
 		expect(await page.evaluate(() => (window as any).noteTest.redraws[1]))
-			.toEqual({ feedback: "thicker axes", previous: svg, context: "Section 1", images: 2 });
+			.toEqual({ feedback: "thicker axes", previous: backed, context: "Section 1", images: 2 });
 		await page.getByRole("button", { name: "Accept redraw" }).click();
 		await page.getByRole("button", { name: "Insert into this note" }).click();
 		const commit = await page.evaluate(() => (window as any).noteTest.commits[0]);
-		expect(commit.embeds).toEqual([{ token: expect.stringMatching(/^%%figure-hw\d+%%$/), svg }]);
+		expect(commit.embeds).toEqual([{ token: expect.stringMatching(/^%%figure-hw\d+%%$/), svg: backed }]);
 		expect(errors).toEqual([]);
 	});
 

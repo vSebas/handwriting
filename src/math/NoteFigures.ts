@@ -142,6 +142,31 @@ export function strokesInFigure<T extends { bounds: InkImageBounds }>(strokes: r
 	});
 }
 
+/**
+ * Give a figure SVG an opaque white background. An embed is an IMAGE and has
+ * to read like one everywhere: both embed kinds arrive background-free (the
+ * ink exporter is deliberately transparent, and Codex is told to draw no
+ * background), so on a dark theme their dark content was invisible (user
+ * report, 2026-10-08). The rect spans the viewBox when one is declared -
+ * including a negative origin - and falls back to 100% otherwise.
+ */
+export function opaqueFigureSvg(svg: string): string {
+	const open = /<svg\b[^>]*?>/.exec(svg);
+	if (!open) return svg;
+	const declared = /viewBox\s*=\s*"([^"]*)"/.exec(open[0]);
+	const sides = declared?.[1]!.trim().split(/[\s,]+/).map(Number);
+	const rect = sides?.length === 4 && sides.every(Number.isFinite)
+		? `<rect x="${sides[0]}" y="${sides[1]}" width="${sides[2]}" height="${sides[3]}" fill="#ffffff"/>`
+		: '<rect width="100%" height="100%" fill="#ffffff"/>';
+	const at = open.index + open[0].length;
+	// REPLACE a leading backdrop rather than trust or stack it: a change
+	// request iterates on a previous redraw that already carries one, and a
+	// revision that grew the viewBox while keeping the old rect would leave
+	// the new area transparent (review finding, 2026-10-08).
+	const rest = svg.slice(at).replace(/^(?:<rect [^>]*fill="#ffffff"\s*\/>)+/, "");
+	return svg.slice(0, at) + rect + rest;
+}
+
 /** Static shapes and text only. No script, no foreignObject (arbitrary HTML),
  * no image/use (external or recursive content), no animation. */
 const SAFE_SVG_ELEMENTS = new Set([
