@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-	FigureContractError, coerceFigures, figureNoteBounds, figureToken, parseFigureFence,
-	stripFigureTokens, stripTokens, strokesInFigure,
+	FigureContractError, coerceFigures, figureNoteBounds, figureToken, opaqueFigureSvg,
+	parseFigureFence, stripFigureTokens, stripTokens, strokesInFigure,
 } from "./NoteFigures";
 import { MAX_FIGURES } from "./CodexLimits";
 
@@ -72,6 +72,25 @@ describe("figure geometry", () => {
 		const outside = { bounds: { left: 250, top: 500, right: 290, bottom: 590 } };
 		expect(strokesInFigure([inside, tail, outside], { left: 100, top: 200, right: 180, bottom: 300 }))
 			.toEqual([inside, tail]);
+	});
+});
+
+describe("opaque figure embeds", () => {
+	it("backs a figure SVG with a white rect spanning its viewBox, origin included", () => {
+		// Transparent dark-stroke embeds vanish on a dark theme; an embed is
+		// an image and has to read like one everywhere.
+		expect(opaqueFigureSvg('<svg xmlns="x" viewBox="-12 -8 40 24"><path d="M0 0"/></svg>'))
+			.toBe('<svg xmlns="x" viewBox="-12 -8 40 24"><rect x="-12" y="-8" width="40" height="24" fill="#ffffff"/><path d="M0 0"/></svg>');
+	});
+	it("falls back to a full-viewport rect without a parseable viewBox", () => {
+		expect(opaqueFigureSvg('<svg width="10" height="10"><path d="M0 0"/></svg>'))
+			.toContain('<rect width="100%" height="100%" fill="#ffffff"/>');
+		expect(opaqueFigureSvg('<svg viewBox="a b c d"><path d="M0 0"/></svg>'))
+			.toContain('<rect width="100%" height="100%" fill="#ffffff"/>');
+	});
+	it("does not pile up backdrops across redraw iterations", () => {
+		const once = opaqueFigureSvg('<svg viewBox="0 0 4 4"><path d="M0 0"/></svg>');
+		expect(opaqueFigureSvg(once)).toBe(once);
 	});
 });
 

@@ -17,7 +17,7 @@ import { Setting, type ButtonComponent } from "obsidian";
 import type { InkStroke } from "../ink/Stroke";
 import { inkToSvg } from "../ink/SvgExport";
 import { inkImageBounds, noteInkImage, type InkImageBounds } from "./MathInkImage";
-import { figureNoteBounds, figureToken, stripTokens, strokesInFigure, type DetectedFigure } from "./NoteFigures";
+import { figureNoteBounds, figureToken, opaqueFigureSvg, stripTokens, strokesInFigure, type DetectedFigure } from "./NoteFigures";
 import type { NoteStrokeSnapshot } from "./WholeNoteInk";
 
 export type FigureChoice = "original" | "redraw" | "ink";
@@ -67,7 +67,10 @@ export function reviewFiguresFor(markdown: string, figures: readonly DetectedFig
 		const pad = 12;
 		out.push({ token, strokes: claimed,
 			image: noteInkImage(ink, { left: raw.left - pad, top: raw.top - pad, right: raw.right + pad, bottom: raw.bottom + pad }, doc),
-			svg: inkToSvg(claimed.map(stroke => JSON.parse(stroke.signature) as InkStroke)),
+			// An embed must read like an image everywhere: opaque white
+			// background, with the ink's colours adjusted for that white the
+			// way every export destination is.
+			svg: opaqueFigureSvg(inkToSvg(claimed.map(stroke => JSON.parse(stroke.signature) as InkStroke), "#ffffff")),
 			choice: "original", redrawSvg: null, accepted: false, busy: false });
 	}
 	return { markdown, figures: out };
@@ -138,9 +141,12 @@ export function renderFigureCard(host: HTMLElement, figure: ReviewFigure,
 			if (signal.aborted) throw new Error("Recognition cancelled.");
 			// A change request iterates on the previous redraw; the plain
 			// redraw button always starts fresh from the original drawing.
-			figure.redrawSvg = await redraw([figure.image, ...around.images], text,
+			// Opaque here, not at the transport: Codex is told to draw no
+			// background, and a transparent dark-stroke embed vanishes on a
+			// dark theme.
+			figure.redrawSvg = opaqueFigureSvg(await redraw([figure.image, ...around.images], text,
 				text ? figure.redrawSvg ?? "" : "", around.text,
-				signal, message => status.setText(message));
+				signal, message => status.setText(message)));
 			feedback.value = "";
 			status.setText("Review the redraw: accept it, or describe a change and send it.");
 		} catch (error) {
