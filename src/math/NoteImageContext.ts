@@ -100,19 +100,43 @@ function visibleMarkdown(slice: string): string {
 	const lines: string[] = [];
 	let fence: string | null = null;
 	for (const line of slice.split("\n")) {
-		const marker = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
 		if (fence) {
-			if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+			// A closer is the run alone (no info string), per CommonMark; a
+			// looser rule closed early and LEAKED the rest of the block.
+			const close = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)?.[1];
+			if (close && close[0] === fence[0] && close.length >= fence.length) fence = null;
 			continue;
 		}
-		if (marker) { fence = marker; continue; }
+		const open = /^[ \t]{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		// A backtick fence's info string may not contain a backtick, so a
+		// one-line ```example``` is an inline CODE SPAN, not an open fence
+		// that swallows every embed after it.
+		if (open && !(open[1]![0] === "`" && open[2]!.includes("`"))) { fence = open[1]!; continue; }
 		if (/^(?: {4}|\t)/.test(line)) continue;
 		lines.push(line);
 	}
-	return lines.join("\n")
-		.replace(/(`+)[\s\S]*?\1/g, " ")
+	return stripCodeSpans(lines.join("\n"))
 		.replace(/%%[\s\S]*?(%%|$)/g, " ")
 		.replace(/<!--[\s\S]*?(-->|$)/g, " ");
+}
+
+/** Inline code spans, paired the CommonMark way: an opening backtick run
+ * closes only with an EQUAL-length run. The lazy-regex form paired unequal
+ * runs and left embeds between them unstripped. */
+function stripCodeSpans(text: string): string {
+	const runs = [...text.matchAll(/`+/g)];
+	let out = "";
+	let from = 0;
+	let at = 0;
+	while (at < runs.length) {
+		const open = runs[at]!;
+		const close = runs.findIndex((run, index) => index > at && run[0].length === open[0].length);
+		if (close < 0) { at++; continue; }
+		out += text.slice(from, open.index) + " ";
+		from = runs[close]!.index + runs[close]![0].length;
+		at = close + 1;
+	}
+	return out + text.slice(from);
 }
 
 /** Resolve, decode and downscale each link to a PNG data URL the bridge
@@ -124,8 +148,10 @@ export async function loadNoteContextImages(app: App, from: TFile, links: string
 			const target = app.metadataCache.getFirstLinkpathDest(link, from.path);
 			if (!target || target.stat.size > MAX_SOURCE_BYTES) continue;
 			const bytes = new Uint8Array(await app.vault.readBinary(target));
+			// The CONTENT must prove its size, not the filename: WebP bytes
+			// under a .png name would otherwise reach the decoder unmeasured.
 			const pixels = declaredImagePixels(bytes);
-			if (pixels !== null && pixels > MAX_DECODE_PIXELS) continue;
+			if (pixels === null || pixels > MAX_DECODE_PIXELS) continue;
 			const bitmap = await createImageBitmap(new Blob([bytes]));
 			try {
 				const scale = Math.min(1, RENDER_MAX_EDGE_PX / Math.max(bitmap.width, bitmap.height, 1));

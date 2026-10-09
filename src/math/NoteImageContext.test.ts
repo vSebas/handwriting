@@ -58,6 +58,15 @@ describe("note-embedded image links as redraw context", () => {
 		// ...and an inline ~~~ span must not read as an unterminated fence
 		// that swallows every real embed after it.
 		expect(embeddedImageLinks("The `~~~` marker, then\n\n![[slide.png]]", 0, null)).toEqual(["slide.png"]);
+		// A backtick fence's info string may not contain a backtick: a
+		// one-line ```example``` is a code span, not an open fence.
+		expect(embeddedImageLinks("```example```\n\n![[slide.png]]", 0, null)).toEqual(["slide.png"]);
+		// Code spans pair EQUAL-length runs, so unequal runs in between do
+		// not strand an embedded reference outside the stripped span.
+		expect(embeddedImageLinks("`` a ``` b ` ![[private.png]] ``", 0, null)).toEqual([]);
+		// A fence only closes on its bare marker; an inner info-string line
+		// must not end it early and leak what follows.
+		expect(embeddedImageLinks("```\n```js inner\n![[in-fence.png]]\n```\n![[after.png]]", 0, null)).toEqual(["after.png"]);
 	});
 });
 
