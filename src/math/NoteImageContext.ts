@@ -99,7 +99,10 @@ export function embeddedImageLinks(markdown: string, from: number, to: number | 
 function visibleMarkdown(slice: string): string {
 	const lines: string[] = [];
 	let fence: string | null = null;
-	for (const line of slice.split("\n")) {
+	// CRLF first: `.` and `$` treat a stray \r as a line terminator, so an
+	// unnormalized Windows note never matched a fence opener at all and
+	// every "hidden" embed leaked (review finding, 2026-10-08).
+	for (const line of slice.replace(/\r\n?/g, "\n").split("\n")) {
 		if (fence) {
 			// A closer is the run alone (no info string), per CommonMark; a
 			// looser rule closed early and LEAKED the rest of the block.

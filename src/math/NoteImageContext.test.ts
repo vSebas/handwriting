@@ -67,6 +67,10 @@ describe("note-embedded image links as redraw context", () => {
 		// A fence only closes on its bare marker; an inner info-string line
 		// must not end it early and leak what follows.
 		expect(embeddedImageLinks("```\n```js inner\n![[in-fence.png]]\n```\n![[after.png]]", 0, null)).toEqual(["after.png"]);
+		// A Windows note's \r reads as a line terminator to `.` and `$`, so
+		// unnormalized CRLF never opened a fence and its embeds leaked.
+		expect(embeddedImageLinks("~~~\r\n![[private.png]]\r\n~~~", 0, null)).toEqual([]);
+		expect(embeddedImageLinks("```\r\n![[hidden.png]]\r\n```\r\n![[ok.png]]", 0, null)).toEqual(["ok.png"]);
 	});
 });
 
