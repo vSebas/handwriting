@@ -2,7 +2,7 @@ import { requestUrl } from "obsidian";
 import { timerHost } from "../util/RuntimeScheduler";
 import {
 	CLIENT_HEALTH_TIMEOUT_MS, CLIENT_MODELS_TIMEOUT_MS, CLIENT_RECOGNIZE_TIMEOUT_MS,
-	FIGURE_CONTEXT_MAX_CHARS, FIGURE_FEEDBACK_MAX_CHARS, MAX_IMAGES, MAX_REDRAW_IMAGES,
+	FIGURE_CONTEXT_MAX_CHARS, FIGURE_FEEDBACK_MAX_CHARS, MAX_BODY_BYTES, MAX_IMAGES, MAX_REDRAW_IMAGES,
 } from "./CodexLimits";
 import { coerceFigures, parseFigureFence, type DetectedFigure } from "./NoteFigures";
 
@@ -112,7 +112,13 @@ export async function redrawFigureImage(settings: CodexServiceSettings, images: 
 	if (!images.length) throw new Error("The figure image is missing. Transcribe the selection again.");
 	if (feedback.length > FIGURE_FEEDBACK_MAX_CHARS) throw new Error("Shorten the change request; Codex reads at most two thousand characters of it.");
 	progress(feedback ? "Sending your changes to Codex..." : "Asking Codex to redraw the figure...");
-	const body: Record<string, unknown> = { task: "redraw", images: images.slice(0, MAX_REDRAW_IMAGES) };
+	// Context images are optional by definition: drop from the tail until the
+	// request fits the bridge's body cap, instead of letting an oversized
+	// optional ride-along 413 the whole redraw. Only the figure crop stays.
+	const sized = images.slice(0, MAX_REDRAW_IMAGES);
+	while (sized.length > 1 && sized.reduce((total, image) => total + image.length, 0) +
+		previous.length + context.length + 4_096 > MAX_BODY_BYTES) sized.pop();
+	const body: Record<string, unknown> = { task: "redraw", images: sized };
 	if (settings.model?.trim()) body.model = settings.model.trim();
 	if (feedback.trim()) body.feedback = feedback.trim();
 	if (previous) body.previous = previous;

@@ -133,6 +133,9 @@ export function renderFigureCard(host: HTMLElement, figure: ReviewFigure,
 		try {
 			let around: RedrawContext = { text: "", images: [] };
 			if (context) { try { around = await context(); } catch { /* best-effort */ } }
+			// The context gather awaited: a card removed or a modal closed in
+			// the meantime must not go on to start the laptop service.
+			if (signal.aborted) throw new Error("Recognition cancelled.");
 			// A change request iterates on the previous redraw; the plain
 			// redraw button always starts fresh from the original drawing.
 			figure.redrawSvg = await redraw([figure.image, ...around.images], text,

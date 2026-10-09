@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { checkCodexNote, codexEndpoint, listCodexModels, recognizeWholeNoteImages, redrawFigureImage } from "./CodexService";
-import { CLIENT_HEALTH_TIMEOUT_MS, CLIENT_MODELS_TIMEOUT_MS, CLIENT_RECOGNIZE_TIMEOUT_MS, FIGURE_CONTEXT_MAX_CHARS, FIGURE_FEEDBACK_MAX_CHARS } from "./CodexLimits";
+import { CLIENT_HEALTH_TIMEOUT_MS, CLIENT_MODELS_TIMEOUT_MS, CLIENT_RECOGNIZE_TIMEOUT_MS, FIGURE_CONTEXT_MAX_CHARS, FIGURE_FEEDBACK_MAX_CHARS, MAX_BODY_BYTES } from "./CodexLimits";
 
 const network = vi.hoisted(() => vi.fn());
 vi.mock("obsidian", async original => ({ ...await original<object>(), requestUrl: network }));
@@ -47,6 +47,14 @@ describe("Codex handwriting service", () => {
 		expect(JSON.parse(network.mock.calls[0]![0].body)).toEqual({ task: "redraw",
 			images: ["data:image/png;base64,figure", "data:image/png;base64,overview"], model: "gpt-choice",
 			feedback: "thicker axes", previous: '<svg viewBox="0 0 2 2"/>', context: "a velocity-time plot" });
+	});
+	it("drops optional context images rather than letting them 413 the redraw", async () => {
+		network.mockResolvedValue({ status: 200, json: { svg: '<svg viewBox="0 0 1 1"/>' } });
+		const huge = "data:image/png;base64," + "A".repeat(MAX_BODY_BYTES);
+		await redrawFigureImage(settings, ["data:image/png;base64,figure", huge], "", "", "",
+			new AbortController().signal, () => {});
+		// The figure crop is mandatory; the oversized ride-along is not.
+		expect(JSON.parse(network.mock.calls[0]![0].body).images).toEqual(["data:image/png;base64,figure"]);
 	});
 	it("truncates oversized auto-gathered context instead of failing the redraw", async () => {
 		network.mockResolvedValue({ status: 200, json: { svg: '<svg viewBox="0 0 1 1"/>' } });

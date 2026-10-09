@@ -3,6 +3,7 @@ import { collectFigureEmbeds, renderFigureCard, reviewFiguresFor,
 	type FigureEmbed, type FigureRedrawer, type ReviewFigure } from "./FigureReview";
 import { noteInkImage, noteInkTiles } from "./MathInkImage";
 import { stripFigureTokens, stripTokens } from "./NoteFigures";
+import { sectionContextRange } from "./NoteImageContext";
 import type { NoteImageRecognizer } from "./WholeNoteRecognitionModal";
 import type { NoteInkSource, NoteStrokeSnapshot } from "./WholeNoteInk";
 
@@ -61,11 +62,12 @@ export class CodexSelectionModal extends Modal {
 					// placed in the ink's own note section.
 					const context = async () => {
 						const anchor = this.insertionAnchor();
+						const range = anchor !== null ? this.contextRange(anchor) : null;
 						return {
 							text: stripFigureTokens(this.output.value),
 							images: [noteInkImage(this.source.ink, this.source.bounds),
-								...(this.noteImages && anchor !== null
-									? await this.noteImages(anchor, this.nextAnchorOffset(anchor)) : [])],
+								...(this.noteImages && range
+									? await this.noteImages(range.from, range.to) : [])],
 						};
 					};
 					for (const figure of review.figures) renderFigureCard(this.figureList, figure, this.redraw, this.figureAbort.signal, context);
@@ -140,11 +142,8 @@ export class CodexSelectionModal extends Modal {
 		return (above ?? this.source.anchors[0]!).offset;
 	}
 
-	/** The next anchor AFTER this one in note order, bounding its section. */
-	private nextAnchorOffset(offset: number): number | null {
-		const following = this.source.anchors.map(anchor => anchor.offset)
-			.filter(candidate => candidate > offset);
-		return following.length ? Math.min(...following) : null;
+	private contextRange(offset: number): { from: number; to: number | null } {
+		return sectionContextRange(this.source.anchors.map(anchor => anchor.offset), offset);
 	}
 
 	onClose(): void {

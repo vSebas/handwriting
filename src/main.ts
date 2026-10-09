@@ -1199,10 +1199,13 @@ export default class HandwritingPlugin extends Plugin {
 	}
 	async startLocalCodexService(): Promise<void> {
 		if (!Platform.isDesktopApp) return;
-		// The gate lives HERE, not only at the call sites: a transcription
+		// The gates live HERE, not only at the call sites: a transcription
 		// modal left open across the settings toggle would otherwise restart
 		// the LAN-listening bridge from its recognize callback while the
-		// setting reads off (review finding, 2026-10-01).
+		// setting reads off (review finding, 2026-10-01), and an awaited
+		// context load resuming after onunload would start a fresh listener
+		// on an instance nothing will ever stop (review finding, 2026-10-08).
+		if (this.unloaded) throw new Error("Handwriting is unloading.");
 		if (!this.settings.codexEnabled) throw new Error("Turn on Transcribe handwriting with Codex in Handwriting settings first.");
 		const token = await this.getLocalCodexService().start();
 		if (this.unloaded) return;
@@ -1227,6 +1230,7 @@ export default class HandwritingPlugin extends Plugin {
 	 * Everything Codex draws passes sanitizeFigureSvg before any preview. */
 	private figureRedrawer(): FigureRedrawer {
 		return async (images, feedback, previous, context, signal, progress) => {
+			if (signal.aborted) throw new Error("Recognition cancelled.");
 			if (Platform.isDesktopApp) {
 				progress("Starting the recognition service on this laptop...");
 				await this.startLocalCodexService();

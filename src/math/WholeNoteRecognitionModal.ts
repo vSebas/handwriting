@@ -3,6 +3,7 @@ import { collectFigureEmbeds, renderFigureCard, reviewFiguresFor,
 	type FigureEmbed, type FigureRedrawer, type ReviewFigure } from "./FigureReview";
 import { noteInkImage, noteInkTiles } from "./MathInkImage";
 import { stripFigureTokens, stripTokens, type DetectedFigure } from "./NoteFigures";
+import { sectionContextRange } from "./NoteImageContext";
 import { imageSelectionBounds, noteInkSections, type NoteInkSource, type NotePlacement, type NoteStrokeSnapshot } from "./WholeNoteInk";
 
 interface ReviewBlock {
@@ -232,11 +233,14 @@ export class WholeNoteRecognitionModal extends Modal {
 		this.blocks.push(block);
 		// Context is read at REDRAW time, so edits to the reviewed Markdown
 		// ride along: the section's text, its ink overview, and any images
-		// already placed in the note between this anchor and the next.
-		const context = async () => ({
-			text: stripFigureTokens(this.blockMarkdown(block)),
-			images: [image, ...(this.noteImages ? await this.noteImages(block.offset, this.nextAnchorOffset(block.offset)) : [])],
-		});
+		// already placed around the section in the note.
+		const context = async () => {
+			const range = this.contextRange(block.offset);
+			return {
+				text: stripFigureTokens(this.blockMarkdown(block)),
+				images: [image, ...(this.noteImages ? await this.noteImages(range.from, range.to) : [])],
+			};
+		};
 		for (const figure of figures) renderFigureCard(card, figure, this.redraw, block.abort.signal, context);
 		field.addEventListener("input", () => { block.value = field.value; this.updateOutput(); });
 		new Setting(card).setName("Mixed Markdown")
@@ -272,11 +276,8 @@ export class WholeNoteRecognitionModal extends Modal {
 		this.updateOutput();
 	}
 
-	/** The next anchor AFTER this one in note order, bounding its section. */
-	private nextAnchorOffset(offset: number): number | null {
-		const following = this.source.anchors.map(anchor => anchor.offset)
-			.filter(candidate => candidate > offset);
-		return following.length ? Math.min(...following) : null;
+	private contextRange(offset: number): { from: number; to: number | null } {
+		return sectionContextRange(this.source.anchors.map(anchor => anchor.offset), offset);
 	}
 
 	private syncReplacementPlacement(): void {
