@@ -621,8 +621,17 @@ declare module "../main" {
 		const mouseBefore = this.settings.mouseInk;
 		const slidesBefore = this.settings.slidesInk;
 		const shapedBefore = this.inkShapingKey();
+		const codexBefore = this.settings.codexEnabled;
 		const before = JSON.stringify(this.settingsSnapshot(this.settings));
 		Object.assign(this.settings, merged);
+		// The fork's bridge follows the synced switch too: a desktop that
+		// adopts `codexEnabled: false` from another device must drop its LAN
+		// listener, not keep answering authenticated requests (sync review,
+		// 2026-11-01). start no-ops off desktop and logs its own failures.
+		if (this.settings.codexEnabled !== codexBefore) {
+			if (this.settings.codexEnabled) this.startLocalCodexServiceQuietly();
+			else this.stopLocalCodexService();
+		}
 		if (this.settings.inkFolder !== folderBefore) this.store.useInkFolder(this.settings.inkFolder);
 		if (this.settings.mouseInk !== mouseBefore) setMouseInk(this.settings.mouseInk);
 		// Here and not in the change report: a save that read the file first takes

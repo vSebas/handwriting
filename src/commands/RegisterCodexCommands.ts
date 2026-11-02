@@ -42,7 +42,10 @@ declare module "../main" {
 						const noteMarkdown = overlay && active?.editor && file ? active.editor.getValue() : null;
 						const anchors = noteMarkdown !== null && file
 							? overlay!.transcriptionAnchors(file.path, noteMarkdown) : [];
-						const source = noteInkSnapshot(strokes, anchors);
+						// Displayed strokes with STORED signatures: the pictures and
+						// anchors share the surface's frame, validation compares
+						// stored to stored (see noteInkSnapshot).
+						const source = noteInkSnapshot(strokes, anchors, overlay?.storedStrokesById());
 						const insert = overlay && active?.editor && file
 							? captureWholeNoteInsertionTarget(active, () => this.app.workspace.activeEditor)
 							: null;
@@ -89,7 +92,7 @@ declare module "../main" {
 						const overlay = overlayForActiveEditor(editor, file);
 						if (!overlay) throw new Error("Open the note in a handwriting-enabled editor before transcribing it.");
 						const anchors = overlay.transcriptionAnchors(file.path, editor.getValue());
-						const snapshot = noteInkSnapshot(inlineInk.strokes(file.path), anchors);
+						const snapshot = noteInkSnapshot(overlay.displayedStrokesForMath(), anchors, overlay.storedStrokesById());
 						const insert = captureWholeNoteInsertionTarget(active, () => this.app.workspace.activeEditor);
 						this.wholeNoteModal?.close();
 						this.wholeNoteModal = new WholeNoteRecognitionModal(this.app, snapshot,

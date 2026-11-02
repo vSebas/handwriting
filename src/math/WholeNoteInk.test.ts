@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { InkStroke } from "../ink/Stroke";
 import { captureWholeNoteInsertionTarget, imageSelectionBounds,
-	markdownBlockAnchors, noteInkSections, noteInkSnapshot, type MathEditor } from "./WholeNoteInk";
+	markdownBlockAnchors, noteInkSections, noteInkSnapshot, strokeSignature, type MathEditor } from "./WholeNoteInk";
 
 function stroke(id: string, x: number, y: number, tool: "pen" | "highlighter" = "pen"): InkStroke {
 	return { id, tool, color: "black", width: 2, createdAt: Number(id.replace(/\D/g, "")) || 1,
@@ -77,5 +77,25 @@ describe("whole-note ink transcription", () => {
 		const insert = captureWholeNoteInsertionTarget(active, () => active);
 		body = "Changed";
 		expect(() => insert([{ markdown: "new", offset: 0 }], "sections", "new")).toThrow("changed");
+	});
+
+	it("signs a stroke by its ink, not its line-anchor layout metadata", () => {
+		// Upstream re-takes `lineAnchor` on stored strokes as text is measured
+		// or edited - the transcription's own insertion included - so a
+		// signature that saw it rejected the removal it had just approved.
+		const a = stroke("s1", 0, 0);
+		const anchored = { ...a, lineAnchor: { line: 2, y: 5, height: 18 } } as unknown as InkStroke;
+		expect(strokeSignature(anchored)).toBe(strokeSignature(a));
+		expect(strokeSignature({ ...a, color: "red" })).not.toBe(strokeSignature(a));
+	});
+	it("takes signatures from the stored strokes when the pictured ones are display-shifted copies", () => {
+		// The surface shows strokes shifted by their line anchors; the anchors
+		// share that frame, but validation compares stored to stored.
+		const stored = stroke("s1", 0, 0);
+		const displayed = { ...stored, bbox: { ...stored.bbox, y: 7 }, points: stored.points.map(p => ({ ...p, y: p.y + 7 })) };
+		const snapshot = noteInkSnapshot([displayed], [], new Map([[stored.id, stored]]));
+		expect(snapshot.strokes[0]!.signature).toBe(strokeSignature(stored));
+		expect(snapshot.strokes[0]!.trace[0]![1]).toBe(7);
+		expect(noteInkSnapshot([displayed]).strokes[0]!.signature).toBe(strokeSignature(displayed));
 	});
 });

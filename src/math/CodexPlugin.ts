@@ -24,7 +24,7 @@ import type { HandwritingPlugin } from "../main";
 /** The overlay seam insertTranscription needs, as InkOverlayTranscription.ts installs it. */
 export interface TranscribedInkHost {
 	validateTranscribedInk(path: string, expected: readonly Pick<NoteStrokeSnapshot, "id" | "signature">[]): void;
-	removeTranscribedInk(path: string, expected: readonly Pick<NoteStrokeSnapshot, "id" | "signature">[]): number;
+	removeInkByIds(path: string, ids: readonly string[]): number;
 }
 
 declare module "../main" {
@@ -38,6 +38,8 @@ declare module "../main" {
 		startLocalCodexService(): Promise<void>;
 		startLocalCodexServiceQuietly(): void;
 		stopLocalCodexService(): void;
+		/** Both review dialogs, closed: their onClose aborts the requests they own (and /cancel frees the laptop). */
+		closeCodexDialogs(): void;
 		figureRedrawer(): FigureRedrawer;
 		noteImageLoader(markdown: string, file: TFile): (from: number, to: number | null) => Promise<string[]>;
 		insertTranscription(overlay: TranscribedInkHost, file: TFile,
@@ -98,6 +100,13 @@ declare module "../main" {
 		this.codexService = null;
 	}
 
+	function closeCodexDialogs(this: HandwritingPlugin): void {
+		this.wholeNoteModal?.close();
+		this.selectionModal?.close();
+		this.wholeNoteModal = null;
+		this.selectionModal = null;
+	}
+
 	/** The redraw loop both transcription modals hand their figure cards.
 	 * Everything Codex draws passes sanitizeFigureSvg before any preview. */
 	function figureRedrawer(this: HandwritingPlugin): FigureRedrawer {
@@ -123,12 +132,17 @@ declare module "../main" {
 	/**
 	 * Commit a reviewed transcription: validate the ink to remove, write each
 	 * figure embed as an .svg beside the note, swap its token for the embed
-	 * link, insert, and only then remove the replaced ink. The insert itself
-	 * re-checks that the note has not changed since the dialog opened, so the
-	 * awaits before it cannot smuggle text into a different note. The modals
-	 * AWAIT this promise: a rejection lands in the dialog's status line with
-	 * the review intact, and any embed file already written for the refused
-	 * insert is taken back out of the vault rather than orphaned.
+	 * link, validate again, insert, and only then remove the replaced ink. The
+	 * insert itself re-checks that the note has not changed since the dialog
+	 * opened, so the awaits before it cannot smuggle text into a different
+	 * note. The second validation is SYNCHRONOUS with the insert and the
+	 * removal goes by id, not through a third check: inserting text above
+	 * anchored ink makes upstream's line anchors re-take the strokes' metadata
+	 * at once, and a byte-for-byte check after the insert refused the removal
+	 * it had just approved (sync review, 2026-11-01). The modals AWAIT this
+	 * promise: a rejection lands in the dialog's status line with the review
+	 * intact, and any embed file already written for the refused insert is
+	 * taken back out of the vault rather than orphaned.
 	 */
 	async function insertTranscription(this: HandwritingPlugin, overlay: TranscribedInkHost, file: TFile,
 		insert: (blocks: TranscriptionBlock[], placement: NotePlacement, combined: string) => void,
@@ -149,6 +163,7 @@ declare module "../main" {
 				for (const [token, link] of links) text = text.split(token).join(link);
 				return text;
 			};
+			if (remove.length) overlay.validateTranscribedInk(file.path, remove);
 			insert(blocks.map(block => ({ markdown: resolve(block.markdown), offset: block.offset })), placement, resolve(combined));
 		} catch (error) {
 			for (const path of created) {
@@ -157,7 +172,7 @@ declare module "../main" {
 			}
 			throw error;
 		}
-		if (remove.length) overlay.removeTranscribedInk(file.path, remove);
+		if (remove.length) overlay.removeInkByIds(file.path, remove.map(stroke => stroke.id));
 	}
 
 export function installCodexPlugin(proto: HandwritingPlugin): void {
@@ -168,6 +183,7 @@ export function installCodexPlugin(proto: HandwritingPlugin): void {
 		startLocalCodexService,
 		startLocalCodexServiceQuietly,
 		stopLocalCodexService,
+		closeCodexDialogs,
 		figureRedrawer,
 		noteImageLoader,
 		insertTranscription,

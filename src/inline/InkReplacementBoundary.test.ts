@@ -7,6 +7,7 @@ import { onInkChanged } from "./InkEvents";
 import type { InlineInkHost } from "./InlineInkStore";
 import { emptyPage, parsePage, serializePage, type ParseResult } from "../model/PageData";
 import type { InkStroke } from "../ink/Stroke";
+import { strokeSignature } from "../math/WholeNoteInk";
 
 let serial = 0;
 const paths = new Set<string>();
@@ -245,5 +246,20 @@ it("removes only reviewed unchanged pen ink and restores it with editor undo", a
 	// A stroke that changed since recognition is refused whole, nothing removed.
 	expect(() => r.overlay.removeTranscribedInk(r.path, [{ id: unrelated.id, signature: "stale" }]))
 		.toThrow("changed since recognition");
+	expect(ids(r.strokes())).toEqual(["unrelated"]);
+});
+
+it("a line anchor re-taken since recognition does not count as changed handwriting", async () => {
+	// Upstream's line anchors rewrite `lineAnchor` on stored strokes as the
+	// text around them is measured or edited - including the insertion of
+	// the transcription itself - so the check compares ink, not layout.
+	const recognized = stroke("recognized"), r = await rig([recognized, stroke("unrelated", 40)]);
+	r.overlay.selection.clear = vi.fn();
+	const expected = [{ id: recognized.id, signature: strokeSignature(recognized) }];
+	const stored = r.strokes().find(s => s.id === recognized.id)!;
+	stored.lineAnchor = { line: 3, y: 12, height: 20 } as unknown as InkStroke["lineAnchor"];
+	expect(() => r.overlay.validateTranscribedInk(r.path, expected)).not.toThrow();
+	// And removal by id alone, for the caller that validated a moment ago.
+	expect(r.overlay.removeInkByIds(r.path, [recognized.id])).toBe(1);
 	expect(ids(r.strokes())).toEqual(["unrelated"]);
 });

@@ -16,8 +16,27 @@ export interface NoteStrokeSnapshot {
 export interface NoteInkSource { ink: MathInk; bounds: InkImageBounds; strokes: NoteStrokeSnapshot[]; anchors: NotePlacementAnchor[] }
 export interface NoteInkSection { ink: MathInk; bounds: InkImageBounds; strokes: NoteStrokeSnapshot[]; anchor: NotePlacementAnchor }
 
-/** A single immutable image source: no stroke-based word or line segmentation. */
-export function noteInkSnapshot(strokes: readonly InkStroke[], anchors: NotePlacementAnchor[] = []): NoteInkSource {
+/**
+ * What a reviewed replacement later checks a stroke against. The stroke's INK
+ * only: upstream's line anchors re-take `lineAnchor` on stored strokes as the
+ * text around them is measured or edited (LineAnchor.ts), and the insertion
+ * of the transcription itself is such an edit, so a byte-for-byte JSON of the
+ * stored stroke rejected the very removal that followed it (sync review,
+ * 2026-11-01). Points, size, colour and tool still have to match exactly.
+ */
+export function strokeSignature(stroke: InkStroke): string {
+	return JSON.stringify({ ...stroke, lineAnchor: undefined });
+}
+
+/**
+ * A single immutable image source: no stroke-based word or line segmentation.
+ * `strokes` is the frame the pictures and section anchors share - the note
+ * surface's DISPLAYED strokes, which line anchors may have shifted from the
+ * stored ones. `stored`, when given, supplies the stored stroke each
+ * signature is taken from, so validation compares stored to stored.
+ */
+export function noteInkSnapshot(strokes: readonly InkStroke[], anchors: NotePlacementAnchor[] = [],
+	stored?: ReadonlyMap<string, InkStroke>): NoteInkSource {
 	const pens = strokes.filter(stroke => stroke.tool === "pen" && stroke.points.length);
 	if (!pens.length) throw new Error("This note has no pen handwriting to convert.");
 	if (pens.length > 1200 || pens.reduce((n, stroke) => n + stroke.points.length, 0) > 120_000) {
@@ -27,7 +46,7 @@ export function noteInkSnapshot(strokes: readonly InkStroke[], anchors: NotePlac
 	const ink = snapshotInk(ordered);
 	const raw = inkImageBounds(ink);
 	const pad = Math.max(12, Math.min(40, (raw.right - raw.left) * .02));
-	const snapshots = ordered.map((stroke, index) => ({ id: stroke.id, signature: JSON.stringify(stroke),
+	const snapshots = ordered.map((stroke, index) => ({ id: stroke.id, signature: strokeSignature(stored?.get(stroke.id) ?? stroke),
 		trace: ink.traces[index]!, bounds: inkImageBounds({ traces: [ink.traces[index]!] }) }));
 	return { ink, strokes: snapshots, anchors: [...anchors].sort((a, b) => a.y - b.y),
 		bounds: { left: raw.left - pad, top: raw.top - pad, right: raw.right + pad, bottom: raw.bottom + pad } };
