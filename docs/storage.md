@@ -175,6 +175,10 @@ A quit before a pending write lands loses what that write was carrying.
 Handwriting flushes on unload, but Obsidian does not wait for the flush, so
 treat it as best effort.
 
+Pending writes are also flushed when the app is hidden or backgrounded and
+when the window loses focus - alt-tabbing to a terminal to commit the vault
+is exactly the moment a mid-debounce sidecar write must not still be pending.
+
 ## how a write happens
 
 Every save writes to `<id>.json.tmp` and renames it over `<id>.json`. A

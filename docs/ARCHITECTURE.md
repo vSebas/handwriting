@@ -11,7 +11,8 @@ a normal Markdown file. The ink is kept in a separate JSON file beside the vault
 other data, and the plugin draws it on a canvas laid over the note. The same
 engine also inks PDFs and the core Slides presentation. Nothing in the plugin needs
 a network. The one thing that can send data out is the bug-report Upload button,
-described at the end.
+described at the end - plus, in this fork, the opt-in Codex transcription bridge
+described under `src/math/`, which is off by default and runs nothing while off.
 
 Most files are small and named for one job. Where a class grew past a thousand
 lines it was split by installing groups of methods onto its prototype (see the
@@ -45,7 +46,8 @@ Every command the plugin registers in the command palette, in three files so non
 grows too large. `RegisterCommands.ts` has the pen, tool and note commands,
 `RegisterExportCommands.ts` the export, PDF and selection commands, and
 `RegisterDiagCommands.ts` the bug-report and diagnostics commands, including the
-only network call in the plugin.
+only network call in the upstream plugin. `RegisterCodexCommands.ts` adds the fork's
+two transcription commands, which exist in the palette only while the setting is on.
 
 ### `src/diag/`
 
@@ -79,7 +81,8 @@ delete-everything flow with its backup. `InkPresets.ts` holds the quick pens.
 The note surface, which is the main product: ink drawn on an ordinary Markdown note
 in the editor and in reading view. `InkOverlay.ts` is the CodeMirror extension that
 mounts a canvas over each note, and the files starting `InkOverlay` are slices of it
-(pen path, lifecycle, camera, erase, pinch, layout, repaint). `InlinePenRouter.ts`
+(pen path, lifecycle, camera, erase, pinch, layout, repaint; `InkOverlayTranscription.ts`
+is the fork's seam for reading the lasso selection and replacing recognised ink). `InlinePenRouter.ts`
 and its slices capture pointer events, so the pen inks while touch pans and pinches.
 `InlineInkStore.ts` and its slices keep a note's ink in memory and talk to the
 persistence layer. `InlineClaim.ts` writes the one frontmatter line the plugin ever
@@ -97,6 +100,21 @@ to the right behaviour by device and defines the `PenSample` type used everywher
 the browser from taking a pen drag for a scroll, `Fling.ts` carries pan momentum,
 `MouseTrail.ts` smooths whole-pixel mouse input, and `PenDiagnosticsView.ts` is the
 pen diagnostics view.
+
+### `src/math/`
+
+The fork's Codex handwriting transcription, all of it under this one folder so the
+upstream surfaces stay untouched. `CodexDesktop.ts` hosts the laptop bridge: a
+bearer-token HTTP server that runs the signed-in Codex CLI (`codex exec`) on the
+handwriting images it receives, and `CodexService.ts` is the client both desktop
+and iPad use to call it. `WholeNoteInk.ts` snapshots a note's pen ink and splits it
+into sections at Markdown block boundaries, `MathInkImage.ts` renders those sections
+to images, and `WholeNoteRecognitionModal.ts` and `CodexSelectionModal.ts` are the
+review dialogs. `NoteFigures.ts`, `FigureReview.ts` and `NoteImageContext.ts` detect
+drawn figures in a transcription, let the user keep, embed or have Codex redraw
+them, and gather the surrounding note as context for a redraw. `CodexPlugin.ts` is
+the slice of `HandwritingPlugin` that owns the bridge's lifecycle and the commit
+path. `CodexLimits.ts` names every cap and timeout.
 
 ### `src/model/`
 
@@ -242,8 +260,8 @@ recovery.
 
 `main.ts` defines `HandwritingPlugin` and its `onload`. At the bottom it installs
 the method groups from other files onto the class (`installPluginSettings`,
-`installPluginOnload`, `installPluginLifecycle`, `installRegisterCommands` and the
-rest), which is how the class stays readable. `onload` then runs, in order:
+`installPluginOnload`, `installPluginLifecycle`, `installRegisterCommands`, the fork's
+`installCodexPlugin` and `installRegisterCodexCommands`, and the rest), which is how the class stays readable. `onload` then runs, in order:
 
 1. `onloadDevice`: sets up the per-device stores, in this device's local storage and
    never in the synced `data.json`: pressure calibration, the latch that says a pen
@@ -258,7 +276,7 @@ rest), which is how the class stays readable. `onload` then runs, in order:
 5. `onloadEmbeds`: ink in reading view and embeds.
 6. `onloadNoteChrome`: the header buttons, the file menu entries, the settings tab.
 7. `onloadLiveReload`: reloading a note's ink when its sidecar changes elsewhere.
-8. `registerCommands`: every command.
+8. `registerCommands`: every command, then `registerCodexCommands` for the fork's two.
 9. `onloadVaultEvents`, `onloadWorkspace`: rename, delete and layout events, which
    start and stop the PDF and Slides surfaces.
 10. `onloadFlushAndForeground`: flushes pending saves when the app is hidden.

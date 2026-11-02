@@ -29,10 +29,19 @@ always be moved into the open later.
 
 ## scope
 
-Handwriting makes no network request on its own, has no accounts, and runs
-no server. The one request is the bug-report window's Upload to developer
+Handwriting itself makes no internet request on its own and has no accounts.
+The one upstream request is the bug-report window's Upload to developer
 button: it is sent only when you tap it, and it carries the report shown on
-screen. The realistic surface is what it reads and writes on disk, and what it does
+screen.
+
+This fork adds optional Codex transcription, **off by default**. With the
+feature off, no server runs and no network requests are made. Enabled on a
+desktop, it hosts a bearer-token-protected HTTP bridge (plain HTTP, reachable
+on the local network at the configured port) and invokes the locally
+installed, signed-in Codex CLI; handwriting images leave the device only to
+that laptop and from there to the user's own Codex account. The token is
+stored in the plugin's `data.json`. Treat the bridge as trusted-network-only:
+do not expose its port beyond networks you trust. The realistic surface is what it reads and writes on disk, and what it does
 with content that comes from a note or a sidecar file.
 
 ## no bug bounty

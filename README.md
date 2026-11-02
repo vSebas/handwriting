@@ -6,6 +6,17 @@ Handwrite, highlight, erase and lasso directly on your notes and PDFs. Your note
 
 Open a note and write. The note stays a `.md` file.
 
+**This fork transcribes mixed handwriting with Codex.** Turn on **Transcribe
+handwriting with Codex** in Handwriting settings (off by default), then run
+**Transcribe all handwriting in this note** or **Lasso: transcribe
+handwriting** and review the resulting prose and LaTeX as editable Markdown.
+Drawn figures are detected and can be kept, embedded as images, or redrawn by
+Codex after your review. Existing note text and pasted images stay in place.
+See [the workflow](docs/math.md) and [Codex CLI setup](services/codex/README.md).
+The community installation instructions below refer to the upstream plugin;
+install this fork's build to use transcription: in BRAT, add `vSebas/handwriting`
+and pick the latest release.
+
 ## removing the plugin
 
 your ink is not stored "in" the markdown. it lives in a folder at your vault root, separate from the editor's text.
@@ -288,7 +299,7 @@ if you have any questions i will try to answer as best i can
 
 ## reporting problems
 
-[open an issue](https://github.com/ellimist-afk/handwriting/issues/new/choose). report what happened. remember to include which device and pen please.
+[open an issue](https://github.com/ellimist-afk/handwriting/issues/new/choose) on the upstream tracker for base plugin problems; for anything about this fork's Codex transcription, [open an issue on the fork](https://github.com/vSebas/handwriting/issues) instead. report what happened. remember to include which device and pen please.
 
 EZ-MODE reporting:
 
@@ -309,9 +320,9 @@ and i guarantee nothing will leave your device unless you press `Upload` button.
 * audio alongside ink
 * ruler + compass on screen
 * laser pointer
-* ocr / handwriting to text ( very soon )
+* ocr / handwriting to text: available in this fork; see [setup](docs/math.md)
 * searchable handwriting ( very soon )
-* handwriting to math/latex ( very soon )
+* handwriting to math/latex: available in this fork; see [setup](docs/math.md)
 * text boxes (soon)
 * compatibility with Obsidian's canvas mode
 * more custom colors

@@ -399,6 +399,19 @@ Slides ink is on by default and has no settings-tab row of its own yet;
 `Toggle slides ink` in the command palette is the way to turn it off, or
 back on.
 
+## transcribing handwriting
+
+This fork can turn pen ink into editable Markdown and LaTeX. Turn on
+**Transcribe handwriting with Codex** in Handwriting settings - the feature is
+off by default, and the two commands only appear while it is on - then run
+`Transcribe all handwriting in this note` for the whole note, or
+`Lasso: transcribe handwriting` for a selection. Review the result before
+inserting it; existing note text and pasted images stay in place. Drawn
+plots and diagrams are detected as figures: keep them as your own ink,
+embed them as images, or have Codex redraw them - a redraw is embedded only
+after you review and accept it. Setup and the full workflow are in
+[math.md](math.md).
+
 ## limitations
 
 <!-- IN FLIGHT, slice ipad-ink-purge-repaint: a line about ink that vanishes
