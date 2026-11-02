@@ -76,6 +76,7 @@ import { holdKeyboardForEveryPen } from "./InlineFocus";
 import { penInkEnabled } from "./PenInk";
 import { installInkOverlayCamera } from "./InkOverlayCamera";
 import { installInkOverlayRepaint } from "./InkOverlayRepaint";
+import { installTranscription } from "./InkOverlayTranscription";
 import {
 	backingScale,
 	rasterScale,
@@ -1574,6 +1575,7 @@ installPenSupport(InkOverlayPlugin.prototype);
 installPenPath(InkOverlayPlugin.prototype);
 installInkOverlayCamera(InkOverlayPlugin.prototype);
 installInkOverlayRepaint(InkOverlayPlugin.prototype);
+installTranscription(InkOverlayPlugin.prototype);
 
 const inkOverlayPlugin = ViewPlugin.fromClass(InkOverlayPlugin, {
 	provide: plugin => EditorView.editorAttributes.of(view => {

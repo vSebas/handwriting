@@ -68,6 +68,10 @@ export const ALWAYS_COMMANDS: readonly PaletteCommand[] = [
 	{ id: "cut-selected-ink", name: "Lasso: cut selection" },
 	{ id: "delete-selected-ink", name: "Lasso: delete selection" },
 	{ id: "paste-ink", name: "Lasso: paste" },
+	// The fork's Codex transcription pair (RegisterCodexCommands.ts); their
+	// own checkCallback hides them while the feature is off.
+	{ id: "recognize-note-handwriting", name: "Transcribe all handwriting in this note" },
+	{ id: "recognize-selected-handwriting", name: "Lasso: transcribe handwriting" },
 ];
 
 /**

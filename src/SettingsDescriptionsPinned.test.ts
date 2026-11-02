@@ -18,6 +18,7 @@ const contract = [
 	{"name": "Pen reticle", "key": "penReticle", "descriptions": ["Show a dot at the pen tip. Global setting. Default on."]},
 	{"name": "Shape snap", "key": "shapeSnap", "descriptions": ["Hold at the end of a stroke to snap it into a shape. Global setting. Default on."]},
 	{"name": "Extra commands for hotkeys", "key": "colorSizeCommands", "descriptions": ["Add tool, color, size, and quick pen commands for hotkeys. Global setting. Default off.", "Add tool, color, size, and quick pen commands for hotkeys. Global setting. Default off. Turning it off takes effect after the plugin reloads."]},
+	{"name": "Transcribe handwriting with Codex", "key": "codexEnabled", "descriptions": ["Transcribe pen ink into Markdown and LaTeX with the laptop's signed-in Codex CLI, through Transcribe all handwriting in this note and Lasso: transcribe handwriting. Review before inserting or replacing ink. Global setting. Default off."]},
 	{"name": "Developer diagnostics", "key": "devDiagnostics", "descriptions": ["Show diagnostic commands after reloading the plugin. Global setting. Default off."]},
 	{"name": "Boox mode", "key": "booxMode", "descriptions": ["Adjust pen input and animations for e-ink screens. Global setting. Default off."]},
 	{"name": "Recalibrate pen pressure", "key": null, "descriptions": ["Forget the pressure range learned on this device and relearn it from your next strokes. This device only."]},
@@ -68,14 +69,14 @@ describe.each([true, false])("settings descriptions with command removal %s", (c
 		expect(definitions(canRemove).available).toBe(canRemove);
 	});
 
-	it("has exactly 16 unique controls and the device recalibration action", () => {
+	it("has exactly 17 unique controls and the device recalibration action", () => {
 		const rows = targets(definitions(canRemove).rows);
-		expect(rows).toHaveLength(17);
-		expect(new Set(rows.map((row) => row.name)).size).toBe(17);
+		expect(rows).toHaveLength(18);
+		expect(new Set(rows.map((row) => row.name)).size).toBe(18);
 		expect(rows.map((row) => row.name).sort()).toEqual(contract.map((row) => row.name).sort());
 		const controls = rows.filter((row) => row.control);
-		expect(controls).toHaveLength(16);
-		expect(new Set(controls.map((row) => row.control!.key)).size).toBe(16);
+		expect(controls).toHaveLength(17);
+		expect(new Set(controls.map((row) => row.control!.key)).size).toBe(17);
 		for (const expected of contract) {
 			const actual = uniqueRow(rows, expected.name);
 			expect(actual.control?.key ?? null, expected.name).toBe(expected.key);

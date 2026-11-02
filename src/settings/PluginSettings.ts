@@ -4,6 +4,7 @@
  * its prototype when main.ts loads (installPluginSettings at its bottom). Bodies moved unchanged from the class. This
  * file imports only types from main.
  */
+import { DEFAULT_CODEX_URL } from "../math/CodexService";
 import { installMethods } from "../inline/InstallMethods";
 import { Notice, Platform } from "obsidian";
 import { inlineInk, refreshPenToolsAll, refreshAllStrips, repaintAllInkOverlays, setEraserRadiusPx, setEraserWholeStrokes, setInkSizeMult, setPenReticle, setPersistEraserMode, setPersistEraserRadius, setPersistInkSize, setPersistToolbarCorner, setShapeSnap, setToolbarCorner, setScrollExpansionEnabled } from "../inline/InkOverlay";
@@ -437,6 +438,13 @@ declare module "../main" {
 				raw?.pageOwners && typeof raw.pageOwners === "object" ? raw.pageOwners : {},
 			eraserRadiusPx: clampEraserRadius(raw?.eraserRadiusPx ?? DEFAULT_ERASER_RADIUS_PX),
 			mouseInk: raw?.mouseInk === true,
+			// `=== true`: only the stored boolean opts in. A stored token is NOT a
+			// signal - pre-gate builds persisted one on every desktop vault with a
+			// signed-in Codex CLI (fork review finding, 2026-10-01).
+			codexEnabled: raw?.codexEnabled === true,
+			codexServiceUrl: typeof raw?.codexServiceUrl === "string" ? raw.codexServiceUrl : DEFAULT_CODEX_URL,
+			codexServiceToken: typeof raw?.codexServiceToken === "string" ? raw.codexServiceToken : "",
+			codexModel: typeof raw?.codexModel === "string" && /^[A-Za-z0-9._-]*$/.test(raw.codexModel) ? raw.codexModel : "",
 			strokePrediction: raw?.strokePrediction !== false,
 			booxMode: raw?.booxMode === true,
 			einkHintOffered: raw?.einkHintOffered === true,

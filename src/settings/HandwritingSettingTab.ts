@@ -25,6 +25,7 @@ import { runDetached } from "../util/Detached";
 import { DEFAULT_INK_FOLDER, inkFolderSyncs, SYNCED_INK_FOLDER } from "../persistence/InkFolder";
 import { TOOLBAR_CORNER_LABELS, normalizeToolbarCorner } from "../inline/ToolbarCorner";
 import { resetPressureCalibration } from "../ink/PressureGain";
+import { checkCodexNote, DEFAULT_CODEX_URL, listCodexModels } from "../math/CodexService";
 import type HandwritingPlugin from "../main";
 import type { HandwritingSettings } from "../main";
 
@@ -541,6 +542,118 @@ export class HandwritingSettingTab extends PluginSettingTab {
 			},
 			{
 				type: "group",
+				heading: "Handwriting recognition",
+				items: [
+					{
+						name: "Transcribe handwriting with Codex",
+						desc: "Transcribe pen ink into Markdown and LaTeX with the laptop's signed-in Codex CLI, through Transcribe all handwriting in this note and Lasso: transcribe handwriting. Review before inserting or replacing ink. Global setting. Default off.",
+						aliases: ["codex", "transcription", "recognition", "ocr", "handwriting recognition"],
+						control: { type: "toggle", key: "codexEnabled" },
+					},
+					// The rest of the group only means something with the feature
+					// on; the definitions are re-evaluated on every paint, so the
+					// toggle's rerender() adds and removes these rows live.
+					...(!this.plugin.settings.codexEnabled ? [] : ([
+						{
+							name: "Set up Codex recognition",
+							render: (setting) => { setting.setDesc(createFragment((fragment) => {
+								const steps = fragment.createEl("ol");
+								steps.createEl("li", { text: "Install Codex CLI on the laptop and sign in with ChatGPT." });
+								steps.createEl("li", { text: "Keep desktop Obsidian running. Handwriting hosts the iPad bridge automatically; nothing else to install." });
+								steps.createEl("li", { text: "On iPad, use the laptop's Wi-Fi address and sync or copy the service access token." });
+							})); },
+						},
+						{
+							name: "Transcription model",
+							render: (setting) => {
+								let defaultModel = Platform.isDesktopApp
+									? this.plugin.localCodexModelSelection().model : "laptop model";
+								let dropdown: import("obsidian").DropdownComponent;
+								const label = () => this.plugin.settings.codexModel
+									? `Using ${this.plugin.settings.codexModel} for transcriptions on this device.`
+									: `Following ${defaultModel}.`;
+								const populate = (models: { id: string; label: string }[]) => {
+									dropdown.selectEl.empty();
+									dropdown.addOption("", `Follow laptop (${defaultModel})`);
+									const selected = this.plugin.settings.codexModel;
+									if (selected && !models.some((model) => model.id === selected)) dropdown.addOption(selected, `${selected} (saved choice)`);
+									for (const model of models) dropdown.addOption(model.id, model.label === model.id ? model.id : `${model.label} (${model.id})`);
+									dropdown.setValue(selected);
+								};
+								setting.setDesc("Loading Codex models from the laptop...");
+								setting.addDropdown((component) => {
+									dropdown = component;
+									populate([]);
+									component.onChange((value) => {
+										this.plugin.settings.codexModel = value;
+										this.plugin.saveSettingsNow();
+										setting.setDesc(label());
+									});
+								});
+								const loadModels = async () => {
+									try {
+										if (Platform.isDesktopApp) await this.plugin.startLocalCodexService();
+										const result = await listCodexModels({ url: this.plugin.settings.codexServiceUrl, token: this.plugin.settings.codexServiceToken });
+										defaultModel = result.defaultModel;
+										populate(result.models);
+										setting.setDesc(`${label()} Model availability is confirmed when you transcribe.`);
+									} catch (error) {
+										populate([]);
+										setting.setDesc(`${label()} Could not load models: ${error instanceof Error ? error.message : "unknown error"}`);
+									}
+								};
+								setting.addExtraButton((button) => button.setIcon("refresh-cw").setTooltip("Refresh Codex models").onClick(() => { void loadModels(); }));
+								void loadModels();
+							},
+						},
+						{
+							name: "Laptop service URL",
+							desc: "On iPad, use the laptop's network address, for example http://192.168.1.20:8765. Keep the laptop and desktop Obsidian running.",
+							render: (setting) => { setting.addText((text) => text.setPlaceholder(DEFAULT_CODEX_URL).setValue(this.plugin.settings.codexServiceUrl).onChange((value) => {
+								this.plugin.settings.codexServiceUrl = value.trim(); this.plugin.saveSettingsNow();
+							})); },
+						},
+						{
+							name: "Laptop service access token",
+							desc: "Desktop Handwriting fills this from the local service. Syncing plugin settings can copy it to your iPad.",
+							render: (setting) => { setting.addText((text) => {
+								text.inputEl.type = "password";
+								text.inputEl.autocomplete = "off";
+								text.setValue(this.plugin.settings.codexServiceToken).onChange((value) => {
+									this.plugin.settings.codexServiceToken = value.trim(); this.plugin.saveSettingsNow();
+								});
+							}); },
+						},
+						{
+							name: "ChatGPT sign-in",
+							desc: "Use the installed Codex CLI to open ChatGPT sign-in on this laptop.",
+							render: (setting) => { setting.addButton((button) => button.setButtonText("Sign in on laptop").setDisabled(!Platform.isDesktopApp).onClick(async () => {
+								button.setDisabled(true);
+								try { await this.plugin.signInToCodex(); setting.setDesc("Codex sign-in verified. Handwriting is ready."); }
+								catch (error) { setting.setDesc(error instanceof Error ? error.message : "Codex sign-in failed."); }
+								finally { button.setDisabled(false); }
+							})); },
+						},
+						{
+							name: "Codex connection",
+							desc: "Check the laptop service and Codex sign-in without sending handwriting.",
+							render: (setting) => { setting.addButton((button) => button.setButtonText("Test connection").onClick(async () => {
+								button.setDisabled(true);
+								try {
+									if (Platform.isDesktopApp) await this.plugin.startLocalCodexService();
+									const model = await checkCodexNote({ url: this.plugin.settings.codexServiceUrl, token: this.plugin.settings.codexServiceToken });
+									setting.setDesc(this.plugin.settings.codexModel
+										? `Codex is ready. Handwriting will request ${this.plugin.settings.codexModel}; laptop default: ${model}.`
+										: `Codex is ready. Laptop model: ${model}.`);
+								} catch (error) { setting.setDesc(error instanceof Error ? error.message : "Connection failed."); }
+								finally { button.setDisabled(false); }
+							})); },
+						},
+					] satisfies SettingDefinitionItem[])),
+				],
+			},
+			{
+				type: "group",
 				heading: "Developer",
 				items: [
 					{
@@ -676,6 +789,15 @@ export class HandwritingSettingTab extends PluginSettingTab {
 				this.plugin.applyBooxMode();
 				repaintAllInkOverlays();
 				embedInkRepaintAll();
+				break;
+			case "codexEnabled":
+				s.codexEnabled = on;
+				if (on) {
+					if (Platform.isDesktopApp) this.plugin.startLocalCodexServiceQuietly();
+				} else this.plugin.stopLocalCodexService();
+				// The rest of the recognition group exists only while this is
+				// on; same reason booxMode redraws the tab.
+				this.rerender();
 				break;
 			case "booxMode":
 				s.booxMode = on;

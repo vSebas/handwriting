@@ -83,6 +83,8 @@ import { installPluginApply } from "./PluginApply";
 import { installPluginLifecycle } from "./PluginLifecycle";
 import { installPluginOnload } from "./PluginOnload";
 import { installPluginOnloadReload } from "./PluginOnloadReload";
+import { installCodexPlugin } from "./math/CodexPlugin";
+import { installRegisterCodexCommands } from "./commands/RegisterCodexCommands";
 
 /**
  * Where "Upload to developer" sends a replay recording. Empty string means
@@ -516,6 +518,8 @@ export default class HandwritingPlugin extends Plugin {
 		await this.onloadDevice();
 		this.onloadStore();
 		await this.loadSettings();
+		// The fork's Codex bridge: opt-in, desktop only, failures logged (see CodexPlugin.ts).
+		if (this.settings?.codexEnabled) this.startLocalCodexServiceQuietly();
 		// After the PDF host is attached in loadSettings: restoring a deletion
 		// can load and write sidecars.
 		this.attachPdfPendingDeletes();
@@ -526,6 +530,7 @@ export default class HandwritingPlugin extends Plugin {
 		this.onloadNoteChrome();
 		this.onloadLiveReload();
 		this.registerCommands({ TRACE_UPLOAD_URL, loadedBuild, penInkCommandHost, penToggleNoticeText, platformOs, showPenToggleNotice, showEraserToggleNotice, showLassoToggleNotice, showSpaceToggleNotice, showPanToggleNotice, showMouseInkToggleNotice });
+		this.registerCodexCommands();
 
 
 		this.onloadVaultEvents();
@@ -585,3 +590,5 @@ installPluginApply(HandwritingPlugin.prototype);
 installPluginLifecycle(HandwritingPlugin.prototype);
 installPluginOnload(HandwritingPlugin.prototype);
 installPluginOnloadReload(HandwritingPlugin.prototype);
+installCodexPlugin(HandwritingPlugin.prototype);
+installRegisterCodexCommands(HandwritingPlugin.prototype);

@@ -3278,3 +3278,81 @@ body.handwriting-boox .handwriting-mobile-tool.is-pressed:not(.is-disabled) {
 :where(.handwriting-gutter-travel .cm-gutters) {
 	position: relative !important;
 }
+.handwriting-math-modal textarea {
+	width: 100%;
+	font-family: var(--font-monospace);
+	resize: vertical;
+}
+
+.handwriting-selection-preview {
+	display: block;
+	max-width: 100%;
+	max-height: 45vh;
+	object-fit: contain;
+}
+
+.handwriting-image-scroll {
+	max-height: 45vh;
+	overflow: auto;
+	border: 1px solid var(--background-modifier-border);
+	padding: var(--size-4-2);
+}
+.handwriting-image-selector {
+	position: relative;
+	display: inline-block;
+	line-height: 0;
+}
+.handwriting-image-selector.is-selecting { touch-action: none; }
+.handwriting-image-selector img {
+	display: block;
+	max-width: 100%;
+	user-select: none;
+	-webkit-user-drag: none;
+	background: white;
+}
+.handwriting-image-selection {
+	position: absolute;
+	box-sizing: border-box;
+	border: 2px solid var(--interactive-accent);
+	background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+	pointer-events: none;
+}
+.handwriting-image-result {
+	border-bottom: 1px solid var(--background-modifier-border);
+	padding: var(--size-4-2) 0;
+}
+.handwriting-image-result img {
+	display: block;
+	max-width: 100%;
+	max-height: 120px;
+	background: white;
+	margin-bottom: var(--size-4-2);
+}
+.handwriting-figure-result {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	padding: var(--size-4-2);
+	margin: var(--size-4-2) 0;
+}
+/* Figure previews show more than the 120px text-section strip: the drawing
+   IS the content here, and the redraw is judged against it visually. */
+.handwriting-figure-result img,
+.handwriting-figure-redraw img {
+	display: block;
+	max-width: 100%;
+	max-height: 220px;
+	background: white;
+	margin-bottom: var(--size-4-2);
+}
+.handwriting-figure-redraw textarea {
+	width: 100%;
+}
+/* The figure cards toggle visibility via the hidden attribute; without this
+   the display:block rules above would override the UA's [hidden] rule. */
+.handwriting-math-modal [hidden] {
+	display: none !important;
+}
+
+.handwriting-math-modal .setting-item-control {
+	flex-wrap: wrap;
+}

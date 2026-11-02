@@ -55,6 +55,8 @@ const ORDER = [
 	"onloadNoteChrome",
 	"onloadLiveReload",
 	"registerCommands",
+	// The fork's two Codex commands, registered right after the rest (RegisterCodexCommands.ts).
+	"registerCodexCommands",
 	"onloadVaultEvents",
 	"onloadWorkspace",
 	"onloadFlushAndForeground",

@@ -56,3 +56,6 @@ export function normalizePath(path: string): string {
 }
 export function setIcon(): void {}
 export function getIcon(): null { return null; }
+
+export function renderMath(): HTMLElement { throw new Error("Math rendering requires Obsidian"); }
+export async function finishRenderMath(): Promise<void> {}

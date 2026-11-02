@@ -472,4 +472,37 @@ describe("the pdf ink colour mode falls back to darken unless a vault says other
 			).toBe("darken");
 		}
 	});
+
+	it("stores the desktop service token for synced plugin settings", async () => {
+		ensureDocument();
+		// Enabled explicitly: startLocalCodexService refuses when the feature
+		// is off, and this test is about the token write-back.
+		const plugin = fakePlugin({ codexEnabled: true, codexServiceToken: "" });
+		await proto.loadSettings.call(plugin);
+		(plugin as unknown as Record<string, unknown>).codexService = { start: async () => "generated-token-at-least-24-characters" };
+		await (plugin as unknown as { startLocalCodexService(): Promise<void> }).startLocalCodexService();
+		expect(plugin.settings.codexServiceToken).toBe("generated-token-at-least-24-characters");
+		expect(plugin.saved?.codexServiceToken).toBe("generated-token-at-least-24-characters");
+	});
+	it("normalizes Codex service settings", async () => {
+		const configured = await loadThenSave({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexModel: "gpt-choice", codexServiceRoot: "C:/obsolete" });
+		expect(configured.saved).toMatchObject({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexModel: "gpt-choice" });
+		const invalid = await loadThenSave({ codexServiceUrl: {}, codexServiceToken: 42, codexModel: "bad model" });
+		expect(invalid.settings.codexServiceUrl).toBe("http://127.0.0.1:8765");
+		expect(invalid.settings.codexServiceToken).toBe("");
+		expect(invalid.settings.codexModel).toBe("");
+	});
+	it("enables Codex only for an explicit stored opt-in", async () => {
+		// A stored token is NOT an opt-in signal: the pre-gate builds persisted
+		// a generated token on every desktop vault whose user merely had a
+		// signed-in Codex CLI, so inferring from it kept those users silently
+		// hosting the bridge against the off-by-default promise (fork review
+		// finding, 2026-10-01). Only the stored boolean itself turns it on.
+		expect((await loadThenSave({ codexServiceToken: "test-token" })).settings.codexEnabled).toBe(false);
+		expect((await loadThenSave({})).settings.codexEnabled).toBe(false);
+		expect((await loadThenSave({ codexEnabled: false, codexServiceToken: "test-token" })).settings.codexEnabled).toBe(false);
+		expect((await loadThenSave({ codexEnabled: true })).settings.codexEnabled).toBe(true);
+		// A rotten value is normalised, never trusted.
+		expect((await loadThenSave({ codexEnabled: "yes" })).settings.codexEnabled).toBe(false);
+	});
 });

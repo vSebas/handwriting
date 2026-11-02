@@ -29,6 +29,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import mainSrc from "./main.ts?raw";
 import commandsSrc from "./commands/RegisterCommands.ts?raw";
 import exportCommandsSrc from "./commands/RegisterExportCommands.ts?raw";
+import codexCommandsSrc from "./commands/RegisterCodexCommands.ts?raw";
 import applySrc from "./PluginApply.ts?raw";
 import tabSrc from "./settings/HandwritingSettingTab.ts?raw";
 import { gatedCommandGroups } from "./main";
@@ -54,9 +55,10 @@ import { INK_SIZE_STEPS } from "./ink/InkSize";
 import { PRESET_COMMANDS } from "./ink/InkPresetCommands";
 
 /** main.ts's code, without main.ts's prose about it. */
-// The command registrations live in commands/RegisterCommands.ts and RegisterExportCommands.ts, read here with main.ts.
+// The command registrations live in commands/RegisterCommands.ts, RegisterExportCommands.ts and the fork's
+// RegisterCodexCommands.ts, read here with main.ts.
 // The setting appliers live in PluginApply.ts, read here with main.ts too.
-const MAIN = codeOnly([mainSrc, commandsSrc, exportCommandsSrc, applySrc].join("\n").replace(/\r\n/g, "\n"));
+const MAIN = codeOnly([mainSrc, commandsSrc, exportCommandsSrc, codexCommandsSrc, applySrc].join("\n").replace(/\r\n/g, "\n"));
 /** The settings page's code, the same way. */
 const TAB = codeOnly(tabSrc.replace(/\r\n/g, "\n"));
 
@@ -145,7 +147,7 @@ describe("the gated set: table and registration agree", () => {
 		// palette; fifteen with the toolbar and zoom bar on / off toggle (1.4.20),
 		// a new id, not the retired cycle. The exact count stops either retired
 		// command creeping back in.
-		expect(ALWAYS_COMMANDS).toHaveLength(15);
+		expect(ALWAYS_COMMANDS).toHaveLength(17);
 	});
 });
 
@@ -211,7 +213,9 @@ describe("the settings row prints the shared table", () => {
 	// ways a bounded-slice guard goes vacuous are a missing opener, a missing
 	// closer, and a window that closes before it opens.
 	const OPEN = 'name: "Extra commands for hotkeys"';
-	const CLOSE = 'heading: "Developer"';
+	// The next group after Storage: the fork's recognition group sits between
+	// it and Developer and is not part of this row.
+	const CLOSE = 'heading: "Handwriting recognition"';
 
 	function row(): string {
 		const from = TAB.indexOf(OPEN);

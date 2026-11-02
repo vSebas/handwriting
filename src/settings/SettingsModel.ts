@@ -4,6 +4,7 @@
  * type back and re-exports the type, so every import of HandwritingSettings from main still resolves.
  */
 import { DEFAULT_ERASER_RADIUS_PX } from "../ink/EraserSize";
+import { DEFAULT_CODEX_URL } from "../math/CodexService";
 import { InkPreset } from "../ink/InkPresets";
 import { HIGHLIGHTER_COLORS, PEN_COLORS } from "../ink/InkColor";
 import { PaperStyle } from "../inline/Paper";
@@ -123,6 +124,11 @@ export interface HandwritingSettings {
 	scribbleHintOffered: boolean;
 	/** Ruled paper background (v0.13.16): none, lines, grid or dots. Per device. */
 	paperStyle: PaperStyle;
+	/** The fork's Codex transcription (src/math): off unless this stored boolean is true. */
+	codexEnabled: boolean;
+	codexServiceUrl: string;
+	codexServiceToken: string;
+	codexModel: string;
 	extendCanvasWhileScrolling: boolean;
 	/**
 	 * Hide Obsidian's status bar while the ACTIVE note is a Handwriting page.
@@ -238,6 +244,10 @@ export const DEFAULT_SETTINGS: HandwritingSettings = {
 	einkHintOffered: false,
 	scribbleHintOffered: false,
 	paperStyle: "none",
+	codexEnabled: false,
+	codexServiceUrl: DEFAULT_CODEX_URL,
+	codexServiceToken: "",
+	codexModel: "",
 	extendCanvasWhileScrolling: false,
 	/*
 	 * OFF, on Alan's ruling: status bar visible by default, with the toggle

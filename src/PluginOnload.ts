@@ -479,6 +479,10 @@ declare module "./main" {
 			if (document.visibilityState === "hidden") this.flushOnHide();
 		});
 		this.registerDomEvent(window, "pagehide", () => this.flushOnHide());
+		// And blur: desktop stays VISIBLE while the user alt-tabs to a terminal
+		// and commits the vault with git - the one moment a mid-debounce sidecar
+		// write must not still be pending, and one neither event above covers.
+		this.registerDomEvent(window, "blur", () => this.flushOnHide());
 
 		// ---- foreground repaint (1.4.12 §14) ----------------------------------
 		// The mirror of the flush above, on the way BACK. WebKit reclaims a

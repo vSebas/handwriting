@@ -233,3 +233,17 @@ it("replacement replay during loading schedules only after the complete merge", 
 	expect(r.writes).toHaveLength(1);
 	expect(ids(parsePage(r.writes[0]!.payload, r.pageId).data.strokes)).toEqual(["unrelated", "piece"]);
 });
+
+it("removes only reviewed unchanged pen ink and restores it with editor undo", async () => {
+	const recognized = stroke("recognized"), unrelated = stroke("unrelated", 40);
+	const r = await rig([recognized, unrelated]);
+	r.overlay.selection.clear = vi.fn();
+	const expected = [{ id: recognized.id, signature: JSON.stringify(recognized) }];
+	expect(r.overlay.removeTranscribedInk(r.path, expected)).toBe(1);
+	expect(ids(r.strokes())).toEqual(["unrelated"]);
+	expect(r.published.at(-1)?.type).toBe("remove");
+	// A stroke that changed since recognition is refused whole, nothing removed.
+	expect(() => r.overlay.removeTranscribedInk(r.path, [{ id: unrelated.id, signature: "stale" }]))
+		.toThrow("changed since recognition");
+	expect(ids(r.strokes())).toEqual(["unrelated"]);
+});

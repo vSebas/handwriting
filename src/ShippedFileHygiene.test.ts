@@ -36,7 +36,10 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /** Internal process terms, base64 so this file does not contain them. */
-const NAMES_B64 = "Y2xhdWRlfGFudGhyb3BpY3xjb2RleHxvcHVzfHNvbm5ldHxmYWJsZXxhc3RyYXxsdW5hfGdwdA==";
+// This fork integrates the Codex CLI as a product feature (src/math/), so "codex" and
+// the model ids it names are shipped vocabulary here, not build tooling; they are
+// deliberately absent from this list. Everything else upstream bans stays banned.
+const NAMES_B64 = "Y2xhdWRlfGFudGhyb3BpY3xvcHVzfHNvbm5ldHxmYWJsZXxhc3RyYXxsdW5h";
 /** Internal paths and phrases, same reason. */
 const PHRASES_B64 = "XC5jbGF1ZGUvfGxlYWQtZW5naW5lZXJ8bWFpbGJveHxxdWV1ZVwubWR8Y28tYXV0aG9yZWQ=";
 /** Positive controls: lines that MUST be caught. */

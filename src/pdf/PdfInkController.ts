@@ -660,6 +660,12 @@ export class PdfInkController {
 	 * on a page nothing is selected on.
 	 */
 	selectionPage = 0;
+
+	/** Recognition (the fork's Codex transcription) reads annotation strokes only, on the page holding the lasso. */
+	selectedStrokesForMath(): InkStroke[] {
+		const ids = new Set(this.selected);
+		return this.strokes(this.selectionPage).filter((stroke) => ids.has(stroke.id));
+	}
 	/** Set while dragging a selection; the point the drag started from. */
 	dragFrom: Point2 | null = null;
 	dragTotal = { dx: 0, dy: 0 };

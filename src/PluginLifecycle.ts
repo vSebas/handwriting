@@ -44,6 +44,9 @@ declare module "./main" {
 	function onunload(this: HandwritingPlugin): void {
 		// First, so that anything still waiting on onLayoutReady finds it set.
 		this.unloaded = true;
+		// The Codex bridge (a LAN listener plus any `codex exec` children) must
+		// not outlive the instance that owns it; stop() is idempotent.
+		this.stopLocalCodexService();
 		// A live trace would outlive this instance; stop it, saved nowhere in
 		// the vault, but only when this recorder started one or diagnostics is
 		// on. Unload tests run this on an Object.create instance, where field
