@@ -27,6 +27,11 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import mainSrc from "./main.ts?raw";
+import commandsSrc from "./commands/RegisterCommands.ts?raw";
+import exportCommandsSrc from "./commands/RegisterExportCommands.ts?raw";
+import codexCommandsSrc from "./commands/RegisterCodexCommands.ts?raw";
+import applySrc from "./PluginApply.ts?raw";
+import tabSrc from "./settings/HandwritingSettingTab.ts?raw";
 import { gatedCommandGroups } from "./main";
 import { codeOnly } from "./CodeOnly";
 import {
@@ -50,7 +55,12 @@ import { INK_SIZE_STEPS } from "./ink/InkSize";
 import { PRESET_COMMANDS } from "./ink/InkPresetCommands";
 
 /** main.ts's code, without main.ts's prose about it. */
-const MAIN = codeOnly(mainSrc.replace(/\r\n/g, "\n"));
+// The command registrations live in commands/RegisterCommands.ts, RegisterExportCommands.ts and the fork's
+// RegisterCodexCommands.ts, read here with main.ts.
+// The setting appliers live in PluginApply.ts, read here with main.ts too.
+const MAIN = codeOnly([mainSrc, commandsSrc, exportCommandsSrc, codexCommandsSrc, applySrc].join("\n").replace(/\r\n/g, "\n"));
+/** The settings page's code, the same way. */
+const TAB = codeOnly(tabSrc.replace(/\r\n/g, "\n"));
 
 /** Every `addGatedCommand({ ... })` body in main.ts, brace-matched. */
 function gatedBlocks(): string[] {
@@ -136,7 +146,7 @@ describe("the gated set: table and registration agree", () => {
 		// Fourteen after `pen-ink-toggle` and `pen-tools-cycle` both left the
 		// palette; fifteen with the toolbar and zoom bar on / off toggle (1.4.20),
 		// a new id, not the retired cycle. The exact count stops either retired
-		// command creeping back in. Handwriting-to-LaTeX adds the sixteenth.
+		// command creeping back in.
 		expect(ALWAYS_COMMANDS).toHaveLength(17);
 	});
 });
@@ -203,16 +213,17 @@ describe("the settings row prints the shared table", () => {
 	// ways a bounded-slice guard goes vacuous are a missing opener, a missing
 	// closer, and a window that closes before it opens.
 	const OPEN = 'name: "Extra commands for hotkeys"';
-	// Stop at the next group; unrelated provider settings are not part of this row.
+	// The next group after Storage: the fork's recognition group sits between
+	// it and Developer and is not part of this row.
 	const CLOSE = 'heading: "Handwriting recognition"';
 
 	function row(): string {
-		const from = MAIN.indexOf(OPEN);
-		const to = MAIN.indexOf(CLOSE);
-		expect(from, `anchor ${OPEN} in main.ts`).toBeGreaterThan(-1);
-		expect(to, `anchor ${CLOSE} in main.ts`).toBeGreaterThan(-1);
+		const from = TAB.indexOf(OPEN);
+		const to = TAB.indexOf(CLOSE);
+		expect(from, `anchor ${OPEN} in the settings tab`).toBeGreaterThan(-1);
+		expect(to, `anchor ${CLOSE} in the settings tab`).toBeGreaterThan(-1);
 		expect(to).toBeGreaterThan(from);
-		const slice = MAIN.slice(from, to);
+		const slice = TAB.slice(from, to);
 		expect(slice.length).toBeLessThan(4000);
 		return slice;
 	}
@@ -227,11 +238,11 @@ describe("the settings row prints the shared table", () => {
 	 * `row()` above states.
 	 */
 	function renderer(): string {
-		const from = MAIN.indexOf("private renderGatedCommands(setting: Setting): void {");
-		expect(from, "main.ts no longer defines renderGatedCommands").toBeGreaterThan(-1);
-		const to = MAIN.indexOf("private renderSupport(", from);
+		const from = TAB.indexOf("private renderGatedCommands(setting: Setting): void {");
+		expect(from, "the settings tab no longer defines renderGatedCommands").toBeGreaterThan(-1);
+		const to = TAB.indexOf("private renderSupport(", from);
 		expect(to, "anchor private renderSupport( after renderGatedCommands").toBeGreaterThan(from);
-		const slice = MAIN.slice(from, to);
+		const slice = TAB.slice(from, to);
 		expect(slice.length).toBeLessThan(2000);
 		return slice;
 	}
@@ -637,12 +648,12 @@ describe("the settings handler applies the plan instead of waiting for a reload"
 	const CLOSE = 'case "devDiagnostics":';
 
 	function handler(): string {
-		const from = MAIN.indexOf(OPEN);
-		const to = MAIN.indexOf(CLOSE);
-		expect(from, "anchor " + OPEN + " in main.ts").toBeGreaterThan(-1);
-		expect(to, "anchor " + CLOSE + " in main.ts").toBeGreaterThan(-1);
+		const from = TAB.indexOf(OPEN);
+		const to = TAB.indexOf(CLOSE);
+		expect(from, "anchor " + OPEN + " in the settings tab").toBeGreaterThan(-1);
+		expect(to, "anchor " + CLOSE + " in the settings tab").toBeGreaterThan(-1);
 		expect(to).toBeGreaterThan(from);
-		const slice = MAIN.slice(from, to);
+		const slice = TAB.slice(from, to);
 		expect(slice.length).toBeLessThan(1500);
 		return slice;
 	}
@@ -655,7 +666,7 @@ describe("the settings handler applies the plan instead of waiting for a reload"
 		// Both ends of the slice asserted, and the ORDER asserted rather than
 		// the text: a command must be registered before its fallback is
 		// dropped, and its fallback filed before it leaves the palette.
-		const from = MAIN.indexOf("applyGatedCommandRegistration(): void {");
+		const from = MAIN.indexOf("applyGatedCommandRegistration(this: HandwritingPlugin): void {");
 		expect(from, "main.ts no longer defines the executor").toBeGreaterThan(-1);
 		const end = MAIN.indexOf("\n\t}", from);
 		expect(end, "the executor has no end").toBeGreaterThan(from);
@@ -675,7 +686,7 @@ describe("the settings handler applies the plan instead of waiting for a reload"
 		expect(MAIN).toContain('typeof this.removeCommand === "function"');
 		expect(MAIN).toContain("gatedCommandRemovalAvailable()");
 		// And the row still carries the reload sentence for that case.
-		expect(MAIN).toContain("Turning it off takes effect after the plugin reloads.");
+		expect(TAB).toContain("Turning it off takes effect after the plugin reloads.");
 	});
 
 	it("gives every gated command a callback, so the mirror can hold all of them", () => {

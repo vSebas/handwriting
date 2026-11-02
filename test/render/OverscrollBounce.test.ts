@@ -15,10 +15,7 @@
  *      after the release and the page never passes the rest - with nothing after it, and not where Infinite Canvas is on
  *      in the direction the page was pushed;
  *   4. a plant that leaves the offset at the overshoot turns the rest cell red (HW_BOUNCE_PLANT_LEAVE_AT_OVERSHOOT=1), one
- *      that carries the page 2 px past its rest before it ends turns the monotonic arm red (HW_BOUNCE_PLANT_OVERSHOOT=1),
- *      and one that never hands the pan to the paper turns condition 2's paper reading red (HW_PAPER_PAN_PLANT_NO_PAN=1).
- *      That last plant used to live in PaperStandingPan, whose subject - a pan standing at rest - no longer occurs: the
- *      glide is where a live pan is read now.
+ *      that carries the page 2 px past its rest before it ends turns the monotonic arm red (HW_BOUNCE_PLANT_OVERSHOOT=1).
  *   5. the paper rides the bounce as the preview element - the bounce puts it up for its own frames, with the settled
  *      zoom's rules - and it comes down on the frame the bounce ends; a contact
  *      mid-bounce takes it down before the contact is read; and a bounce after a zoom change carries the settled zoom's
@@ -37,16 +34,40 @@
 import { beforeAll, afterAll, it, expect } from "vitest";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { chromium, type Browser, type Page } from "playwright";
 import css from "../../styles.css?raw";
 import REAL_OBSIDIAN_CSS from "./obsidianReadableWidth";
 
 declare const process: { env: Record<string, string | undefined> };
 
+for (const flag of ["HW_GUTTER_LEFT_PLANT", "HW_GUTTER_PIXEL_PLANT"]) {
+	if (process.env[flag] !== undefined) throw new Error("Excluded glyph plant requested: " + flag);
+}
+
+async function sha256(value: string | Uint8Array) {
+	const bytes = typeof value === "string" ? new TextEncoder().encode(value) : Uint8Array.from(value);
+	return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Optional saved inputs are read at runtime; no private fixture bytes enter the repository.
+const actualInkPath = process.env.HW_GUTTER_INK;
+const actualTextPath = process.env.HW_GUTTER_TEXT;
+let actualGutter: { ink: string; text: string; pageId: string; strokes: number; inkHash: string; textHash: string } | null = null;
+if (actualInkPath || actualTextPath) {
+	if (!actualInkPath || !actualTextPath) throw new Error("both gutter fixture paths are required");
+	const ink = readFileSync(actualInkPath, "utf8"), text = readFileSync(actualTextPath, "utf8");
+	const inkHash = await sha256(ink), textHash = await sha256(text), page = JSON.parse(ink);
+	if (inkHash !== process.env.HW_GUTTER_INK_SHA256 || textHash !== process.env.HW_GUTTER_TEXT_SHA256)
+		throw new Error("gutter fixture hash mismatch");
+	if (!text.includes("handwriting-page-id: " + page.pageId) || page.strokes.length !== 1621)
+		throw new Error("gutter fixture identity or stroke count mismatch");
+	actualGutter = { ink, text, pageId: page.pageId, strokes: page.strokes.length, inkHash, textHash };
+}
+
 const PAGE = `
 import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, lineNumbers } from "@codemirror/view";
 import { history } from "@codemirror/commands";
 import { inlineInk, inkOverlayExtension, overlayForPath, setScrollExpansionEnabled, setInlineTool, setInkSizeMult } from "../../src/inline/InkOverlay";
 import { setInkColorHex } from "../../src/ink/InkColor";
@@ -115,7 +136,7 @@ function sample(phase, withInk) {
 	return { phase, t: performance.now(), k, preview: !!overlay.pinchPreview, restX: pan.x, restY: pan.y,
 		bounce: typeof overlay.overscrollBounceReadout === "function" ? overlay.overscrollBounceReadout() : null,
 		contentLeft: cr.left, viewLeft: sr.left, viewRight: sr.right, contentRight: cr.right, textLeft: t.left, textCy: t.cy,
-		// s189: the vertical pair, so a cell can read the axis the canvas corrects (the origin edge) the same way
+		// The vertical pair, so a cell can read the axis the canvas corrects (the origin edge) the same way
 		// it has always read the horizontal one. Read-only, and the horizontal fields are untouched.
 		contentTop: cr.top, viewTop: sr.top,
 		sizerX: translateX(sizer.style.transform), sizerTransform: sizer.style.transform || "",
@@ -129,41 +150,63 @@ function sample(phase, withInk) {
 		inkLeft: ink && ink.n ? ink.left : null, inkCy: ink && ink.n ? ink.cy : null };
 }
 
-async function pinchAbout(to, steps, cx, cy, framesAfter, withInk, travel) {
+async function pinchAbout(to, steps, cx, cy, framesAfter, withInk, travel, travelY = 0) {
 	const { overlay } = rig, router = overlay.router, from = overlay.pinchScaleNow;
 	const spread0 = 300, spread1 = 300 * to / from, drift = travel || 0;
-	// s97 add. 21: the centroid may TRAVEL across the gesture, which is how a real two-finger drag makes
+	// The centroid may TRAVEL across the gesture, which is how a real two-finger drag makes
 	// blank beside the page. Rounding alone leaves 19 px here, too small for the pen plant to
 	// discriminate; a 60 px drag makes the correction by construction.
-	const touch = (s, f) => { const c = cx + drift * (f === undefined ? 0 : f); router.touchPos.set(911, { x: c - s / 2, y: cy }); router.touchPos.set(912, { x: c + s / 2, y: cy }); };
+	const touch = (s, f) => { const c = cx + drift * (f === undefined ? 0 : f); const py = cy + travelY * (f === undefined ? 0 : f); router.touchPos.set(911, { x: c - s / 2, y: py }); router.touchPos.set(912, { x: c + s / 2, y: py }); };
 	const ev = type => new PointerEvent(type, { pointerId: 912, pointerType: "touch" });
 	touch(spread0); router.beginPinch(ev("pointerdown"));
 	let last = null;
 	for (let i = 1; i <= steps; i++) { touch(spread0 + (spread1 - spread0) * i / steps, i / steps); router.updatePinch(ev("pointermove")); await rendered(); if (i === steps) last = sample("last-preview"); }
-	router.endPinch(ev("pointerup"), { x: cx + drift, y: cy }); router.touchPos.clear();
+	router.endPinch(ev("pointerup"), { x: cx + drift, y: cy + travelY }); router.touchPos.clear();
 	const rows = [];
 	for (let j = 1; j <= framesAfter; j++) { await rendered(); rows.push(sample("settle-" + j, withInk)); }
 	return { last, rows };
 }
 
 window.bounce = {
-	async mount(infinite, tag) {
+	async mount(infinite, tag, numbered = false, fixture = null, nested = false, minimal = false) {
 		setPenInk(true); setScrollExpansionEnabled(!!infinite);
 		setInlineTool("pen"); setInkColorHex("pen", "#ff00ff"); setInkSizeMult("pen", 4);
 		document.body.classList.add("handwriting-paper-lines");
 		const path = "bounce-" + (tag || "gesture") + ".md";
-		const pane = document.body.appendChild(document.createElement("div"));
+		const host = minimal ? document.body.appendChild(document.createElement("div")) : document.body;
+		if (minimal) { host.className = "workspace-leaf-content"; host.setAttribute("data-type", "markdown"); }
+		const contentHost = minimal ? host.appendChild(document.createElement("div")) : host;
+		if (minimal) contentHost.className = "view-content";
+		const pane = contentHost.appendChild(document.createElement("div"));
 		pane.className = "markdown-source-view mod-cm6";
 		pane.style.cssText = "position:relative;margin-left:" + HOST_LEFT + "px;width:" + PANE_W + "px;height:" + PANE_H + "px;overflow:hidden";
-		const doc = Array.from({ length: 400 }, (_, i) => "line " + i + " alpha beta gamma delta epsilon zeta").join("\\n");
-		const view = new EditorView({ parent: pane, state: EditorState.create({ doc, extensions: [history(), EditorView.lineWrapping,
+		if (fixture) { ids.set(path, fixture.pageId); sidecars.set(fixture.pageId, fixture.ink); }
+		const doc = fixture ? fixture.text : Array.from({ length: 400 }, (_, i) => "line " + i + " alpha beta gamma delta epsilon zeta").join("\\n");
+		const view = new EditorView({ parent: pane, state: EditorState.create({ doc, extensions: [history(), EditorView.lineWrapping, ...(numbered ? [lineNumbers()] : []),
 			editorInfoField.init(() => ({ app: { commands: { executeCommandById: () => false } }, file: { path }, editor: {} })), inkOverlayExtension(),
 			EditorView.theme({ "&": { width: PANE_W + "px", height: PANE_H + "px" }, ".cm-scroller": { overflowY: "auto", overflowX: "hidden" }, ".cm-content": { fontFamily: "monospace", fontSize: "16px", lineHeight: "24px" } })] }) });
 		const sizer = installSizer(view);
+		if (nested) {
+			const gutters = view.scrollDOM.querySelector(":scope > .cm-gutters");
+			if (!gutters) throw new Error("missing stock gutters before nested mount");
+			const container = view.contentDOM.parentElement;
+			// Stock CM detaches/reinserts gutters during viewport refresh. Obsidian hosts
+			// them in its content container; adapt that insertion point in this fixture only.
+			const insert = view.scrollDOM.insertBefore.bind(view.scrollDOM);
+			view.scrollDOM.insertBefore = (node, before) => node === gutters
+				? container.insertBefore(node, before?.parentNode === container ? before : view.contentDOM)
+				: insert(node, before);
+			container.insertBefore(gutters, view.contentDOM);
+		}
 		await settle(12);
 		const overlay = overlayForPath(path);
 		if (!overlay) throw new Error("no overlay for " + path);
 		rig = { pane, view, overlay, sizer, path };
+		if (fixture) {
+			for (let i = 0; i < 120 && inlineInk.strokes(path).length !== fixture.strokes; i++) await rendered();
+			return { strokes: inlineInk.strokes(path).length, pageId: fixture.pageId, textLines: view.state.doc.lines,
+				inkHash: fixture.inkHash, textHash: fixture.textHash };
+		}
 		const t = textBox(view), x = t.left + 80, y = t.cy;
 		rig.pen = (type, px, py, buttons) => document.elementFromPoint(px, py)?.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "pen", pointerId: 901, isPrimary: true, clientX: px, clientY: py, buttons, pressure: buttons ? 0.5 : 0 }));
 		rig.pen("pointerdown", x, y, 1); for (let i = 1; i <= 6; i++) rig.pen("pointermove", x + 30 * i, y, 1); rig.pen("pointerup", x + 180, y, 0);
@@ -174,18 +217,178 @@ window.bounce = {
 		return { strokes: inlineInk.strokes(path).length, natural: sample("natural", true), inkMiddleX: t.left + 170 };
 	},
 	/**
-	 * s97 add. 21: the round trip that leaves the canvas's edge INSIDE the pane - in to 300% about the
+	 * The round trip that leaves the canvas's edge INSIDE the pane - in to 300% about the
 	 * ink and back out to 100% about the same point, the blank coming from the scale's own rounding.
 	 * It used to zoom out 340 px to the left, which clipped the page instead and leaned on the fitting
-	 * clamp s97 deleted; there was then no ease at all for these cells to read.
+	 * clamp a later ruling deleted; there was then no ease at all for these cells to read.
 	 */
 	/**
-	 * s189 [Architect]: THE DRIVE THAT OWES A CORRECTION UNDER THE CANVAS. The same-centre round trip above
+	 * THE DRIVE THAT OWES A CORRECTION UNDER THE CANVAS. The same-centre round trip above
 	 * trip owes 1 px there - the canvas keeps the page where the fingers left it sideways, so rounding blank on x
 	 * is all there is, and 1 px is no bounce to read. What the canvas DOES correct is the origin edge: zoom in
 	 * about the ink, then out about a point 40 px below it, and the page ends with blank above its own top, which
-	 * the settle owes back. This is the s188 TOP drive, measured 26.33 px on that rig.
+	 * the settle owes back. This is the TOP drive, measured 26.33 px on that rig.
 	 */
+	async gutterPixelsPrepare(scale) {
+		const { view, overlay } = rig, sd = view.scrollDOM;
+		setPenInk(false);
+		const box = sd.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + 80;
+		if (scale !== 1) await pinchAbout(scale, 30, x, y, 60, false);
+		sd.scrollTop = 0; view.requestMeasure(); await settle(12);
+		const lines = Array.from(view.contentDOM.querySelectorAll(".cm-line"));
+		const line = lines.slice(TEXT_LINE).find(el => el.textContent.trim().length >= 3 && el.getBoundingClientRect().bottom < box.bottom - 160);
+		if (!line) throw new Error("no visible nonempty glyph line");
+		const number = view.state.doc.lineAt(view.posAtDOM(line)).number;
+		const gutter = Array.from(sd.querySelectorAll(".cm-lineNumbers .cm-gutterElement")).find(el => el.textContent.trim() === String(number));
+		if (!gutter) throw new Error("no matching number glyph " + JSON.stringify({number,lines:lines.length,gutters:Array.from(sd.querySelectorAll(".cm-lineNumbers .cm-gutterElement")).map(el=>({number:el.textContent.trim(),height:el.getBoundingClientRect().height})),nested:sd.querySelectorAll(".cm-sizer > .cm-contentContainer > .cm-gutters").length}));
+		rig.pixel = { line, gutter, number, x, y, original: gutter.innerHTML };
+		return window.bounce.gutterPixelsRead();
+	},
+	gutterPixelsRead() {
+		const { view, overlay, pixel } = rig, { line, gutter, number } = pixel, sd = view.scrollDOM;
+		const rect = el => { const r = el.getBoundingClientRect(); return { x:r.x,y:r.y,width:r.width,height:r.height,top:r.top,bottom:r.bottom }; };
+		const glyphRect = el => {
+			const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let node;
+			while ((node = walker.nextNode()) && !node.textContent.trim()) {}
+			if (!node) throw new Error("missing glyph text node");
+			// Include the property/value prefix, not just a repeated "handwriting-" prefix.
+			// This fixed range is chosen before rest capture and never tuned per bounce frame.
+			const range = document.createRange(); range.setStart(node,0); range.setEnd(node,Math.min(node.textContent.length,48));
+			return rect(range);
+		};
+		const gutters = sd.querySelector(".cm-gutters"), cs = getComputedStyle(gutters), bounce = overlay.overscrollBounceReadout();
+		return { t:performance.now(), epoch:performance.timeOrigin+performance.now(), number, scale:overlay.pinchScaleNow,
+			line:rect(line), gutter:rect(gutter), textGlyph:glyphRect(line), numberGlyph:glyphRect(gutter),
+			offset:rect(gutter).top-rect(line).top, active:bounce.active, bounceY:bounce.y,
+			nested:sd.querySelectorAll(".cm-sizer > .cm-contentContainer > .cm-gutters").length,
+			direct:sd.querySelectorAll(":scope > .cm-gutters").length,
+			computed:{position:cs.position,zoom:cs.zoom,transform:cs.transform,sizerTransform:getComputedStyle(rig.sizer).transform},
+			viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio},visibility:document.visibilityState };
+	},
+	async gutterPixelsStart() {
+		const { overlay, pixel } = rig, router=overlay.router, {x,y}=pixel;
+		const ev=type=>new PointerEvent(type,{pointerId:912,pointerType:"touch"});
+		const put=(cy,spread=300)=>{router.touchPos.set(911,{x:x-spread/2,y:cy});router.touchPos.set(912,{x:x+spread/2,y:cy});};
+		put(y);router.beginPinch(ev("pointerdown"));put(y,312);router.updatePinch(ev("pointermove"));await rendered();
+		put(y);router.updatePinch(ev("pointermove"));await rendered();
+		const travel=Math.max(160,3*router.cb.overscrollAllowancePx());
+		for(let i=1;i<=12;i++){put(y+travel*i/12);router.updatePinch(ev("pointermove"));await rendered();}
+		router.endPinch(ev("pointerup"),{x,y:y+travel});router.touchPos.clear();
+		rig.pixel.rows=[];
+		const tick=()=>{const row=window.bounce.gutterPixelsRead();rig.pixel.rows.push(row);if(row.active)requestAnimationFrame(tick);};
+		requestAnimationFrame(tick);
+		return window.bounce.gutterPixelsRead();
+	},
+	gutterPixelsRows(){return rig.pixel.rows || [];},
+	async gutterLeftPrepare(scale) {
+		await window.bounce.gutterPixelsPrepare(scale);
+		const {view,overlay,pixel}=rig, sd=view.scrollDOM;
+		sd.scrollLeft=0; view.requestMeasure(); await settle(12);
+		pixel.events=[]; pixel.contacts=new Map(); pixel.leftRows=[]; pixel.recording=true;
+		for(const type of ["pointerdown","pointermove","pointerup","pointercancel"]) {
+			sd.addEventListener(type,e=>{
+				if(e.pointerType!=="touch")return;
+				if(type==="pointerup"||type==="pointercancel")pixel.contacts.delete(e.pointerId);
+				else pixel.contacts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+				pixel.events.push({type,t:performance.now(),pointerId:e.pointerId,pointerType:e.pointerType,
+					isTrusted:e.isTrusted,x:e.clientX,y:e.clientY,contacts:pixel.contacts.size});
+			},true);
+		}
+		const tick=()=>{if(!pixel.recording)return;pixel.leftRows.push(window.bounce.gutterLeftRead());requestAnimationFrame(tick);};
+		requestAnimationFrame(tick);
+		return window.bounce.gutterLeftRead();
+	},
+	gutterLeftRead() {
+		const row=window.bounce.gutterPixelsRead(), {view,overlay,pixel,sizer}=rig, sd=view.scrollDOM;
+		const gutters=sd.querySelector(".cm-gutters"), cs=getComputedStyle(gutters), sr=sd.getBoundingClientRect(), zr=sizer.getBoundingClientRect();
+		const scs=getComputedStyle(sd), zcs=getComputedStyle(sizer), container=gutters.parentElement;
+		const transform=new DOMMatrixReadOnly(zcs.transform);
+		const geometry=el=>{const r=el.getBoundingClientRect(),c=getComputedStyle(el);return {
+			x:r.x,y:r.y,width:r.width,height:r.height,position:c.position,transform:c.transform,
+			padding:[c.paddingTop,c.paddingRight,c.paddingBottom,c.paddingLeft],zoom:c.zoom};};
+		return {...row, scrollLeft:sd.scrollLeft, logicalPanX:overlay.viewportPan.x,
+			bounceX:overlay.overscrollBounceReadout().x,sizerX:zr.left,scrollerX:sr.left,
+			layoutBoundaryX:sr.left+(sd.clientLeft+Number.parseFloat(scs.paddingLeft||"0")+(Number.parseFloat(zcs.marginLeft)||0))*(sr.width/sd.offsetWidth),
+			transformX:transform.m41,position:cs.position,left:cs.left,insetInlineStart:cs.insetInlineStart,
+			sizerTransform:sizer.style.transform,sizerComputedTransform:zcs.transform,sizerMarginLeft:zcs.marginLeft,sizerOffsetLeft:sizer.offsetLeft,sizerOffsetTop:sizer.offsetTop,
+			typedTop:gutters.computedStyleMap?String(gutters.computedStyleMap().get("top")):null,resolvedTop:cs.top,guttersTransform:gutters.style.transform,
+			containerPosition:getComputedStyle(container).position,sizerPosition:zcs.position,scrollerPosition:scs.position,
+			bodyClasses:Array.from(document.body.classList),logicalPanY:overlay.viewportPan.y,
+			geometry:{scroller:geometry(sd),sizer:geometry(sizer),container:geometry(container),gutters:geometry(gutters)},
+			glyphDomRestored:pixel.gutter.innerHTML===pixel.original,
+			contacts:pixel.contacts.size,eventCount:pixel.events.length,events:pixel.events.slice(-1),
+			horizontalOffset:row.numberGlyph.x-row.textGlyph.x};
+	},
+	gutterLeftReset() {
+		const {gutter,original}=rig.pixel;gutter.innerHTML=original;
+		return window.bounce.gutterLeftRead();
+	},
+	gutterLeftFinish(){rig.pixel.recording=false;return {rows:rig.pixel.leftRows,events:rig.pixel.events};},
+	async gutterTopPull(scale) {
+		const { view, overlay } = rig, router = overlay.router, sd = view.scrollDOM;
+		setPenInk(false);
+		const box = sd.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + 80;
+		if (scale !== 1) await pinchAbout(scale, 30, x, y, 60, false);
+		sd.scrollTop = 0;
+		view.requestMeasure();
+		await settle(12);
+		const read = phase => {
+			const line = lineEl(view);
+			const number = view.state.doc.lineAt(view.posAtDOM(line)).number;
+			const gutter = Array.from(sd.querySelectorAll(".cm-lineNumbers .cm-gutterElement"))
+				.find(el => el.textContent.trim() === String(number) && el.getBoundingClientRect().height > 0);
+			if (!gutter) throw new Error("missing visible gutter for line " + number);
+			const lr = line.getBoundingClientRect(), gr = gutter.getBoundingClientRect();
+			const viewport = sd.getBoundingClientRect(), gutters = sd.querySelector(":scope > .cm-gutters");
+			const elements = Array.from(sd.querySelectorAll(".cm-lineNumbers .cm-gutterElement"));
+			const pairs = Array.from(view.contentDOM.querySelectorAll(".cm-line")).map(el => {
+				const number = view.state.doc.lineAt(view.posAtDOM(el)).number;
+				const ge = elements.find(g => g.textContent.trim() === String(number) && g.getBoundingClientRect().height > 0);
+				const r = el.getBoundingClientRect(), g = ge?.getBoundingClientRect();
+				return { number, visible: r.bottom > viewport.top && r.top < viewport.bottom,
+					lineTop: r.top, gutterTop: g?.top ?? null, offset: g ? g.top - r.top : null };
+			});
+			const bounce = overlay.overscrollBounceReadout();
+			return { phase, t: performance.now(), number, scale: overlay.pinchScaleNow, pairs,
+				gutterNumbers: elements.map(el => ({ number: el.textContent.trim(), height: el.getBoundingClientRect().height })),
+				gutterCount: elements.length, gutterParentIsScroller: gutters?.parentElement === sd,
+				pan: { x: overlay.viewportPan.x, y: overlay.viewportPan.y },
+				lineTop: lr.top, gutterTop: gr.top, offset: gr.top - lr.top,
+				active: bounce.active, bounceY: bounce.y, fromY: bounce.fromY,
+				gutterTransform: gutter.parentElement.style.transform,
+				sizerTransform: rig.sizer.style.transform };
+		};
+		const rest = read("rest");
+		const ev = type => new PointerEvent(type, { pointerId: 912, pointerType: "touch" });
+		const put = (cy, spread = 300) => {
+			router.touchPos.set(911, { x: x - spread / 2, y: cy });
+			router.touchPos.set(912, { x: x + spread / 2, y: cy });
+		};
+		// Engage the existing pinch route, restore its spread, then pull only past the top.
+		put(y); router.beginPinch(ev("pointerdown"));
+		put(y, 312); router.updatePinch(ev("pointermove")); await rendered();
+		put(y); router.updatePinch(ev("pointermove")); await rendered();
+		const travel = Math.max(160, 3 * router.cb.overscrollAllowancePx());
+		for (let i = 1; i <= 12; i++) {
+			put(y + travel * i / 12); router.updatePinch(ev("pointermove")); await rendered();
+		}
+		const held = read("held");
+		router.endPinch(ev("pointerup"), { x, y: y + travel }); router.touchPos.clear();
+		const frames = [read("lift")];
+		// Read every animation frame, including the final frame that clears the translate.
+		await new Promise((resolve, reject) => {
+			let count = 0;
+			const tick = () => {
+				try {
+					const row = read("frame"); frames.push(row);
+					if (++count >= 120 || (!row.active && count >= 4)) resolve();
+					else requestAnimationFrame(tick);
+				} catch (error) { reject(error); }
+			};
+			requestAnimationFrame(tick);
+		});
+		return { rest, held, frames, final: read("final"), travel };
+	},
 	async originEdgeOvershoot(inkMiddleX, cy) {
 		await pinchAbout(3, 30, inkMiddleX, cy, 16, false);
 		return pinchAbout(1, 30, inkMiddleX, cy + 40, 48, true);
@@ -244,7 +447,7 @@ window.bounce = {
 		// right after the lift, before settle() runs a single frame, so a resumed ease reads mid-decay here
 		// and a mere park (no ease at all) would read x:0 already - the two are not the same claim.
 		const justAfterPenUp = sample("just-after-penup", false);
-		// s105 add. 11: settle(12) is ~200ms of frames and the ease is 500ms wall-clock, so a fixed frame
+		// Settle(12) is ~200ms of frames and the ease is 500ms wall-clock, so a fixed frame
 		// budget reads "after" while the resume is still playing - red by construction, not by defect. Wait
 		// for the readout to go quiet instead, the same shape lateCatch above uses, then read the endpoint.
 		for (let j = 0; j < 90; j++) {
@@ -259,7 +462,7 @@ window.bounce = {
 			expectedAtRest: px - atContact.contentLeft - rig.noteOffset, expectedThroughBounce: px - before.contentLeft - rig.noteOffset };
 	},
 	/**
-	 * THE GIVE AT AN END, THEN A SECOND GRAB WHILE IT SPRINGS BACK (Reviewer option 2, s106 add. 2).
+	 * THE GIVE AT AN END, THEN A SECOND GRAB WHILE IT SPRINGS BACK.
 	 *
 	 * One finger dragged DOWN at the top, far enough to reach the allowance; the lift
 	 * releases the give; a second contact lands while it is still springing and lifts again without
@@ -273,7 +476,7 @@ window.bounce = {
 	 * the one exception. A first attempt dispatched synthetic touch PointerEvents and the premise
 	 * read a give of 0, so the drive is no longer the variable under test.
 	 *
-	 * No plant of its own: the Reviewer plants this cell independently for the verdict, and an
+	 * No plant of its own: review plants this cell independently for the verdict, and an
 	 * author's plant on an author's cell was ruled to add nothing here.
 	 *
 	 * Endpoint sampling only, no per-frame rows: this file goes red under seven-file load on timing.
@@ -333,7 +536,7 @@ window.bounce = {
 		finger("pointerdown", yTop, 1);
 		atDown.push(probe());
 		// One small move first to clear the assist's slop, then the run, which is the shape the
-		// Reviewer's fling probe drives a real one-finger drag with.
+		// the fling probe drives a real one-finger drag with.
 		finger("pointermove", yTop + 10, 1);
 		for (let i = 1; i <= 12; i++) { finger("pointermove", yTop + 10 + 20 * i, 1); if (i === 6) atDown.push(probe()); }
 		await rendered();
@@ -368,7 +571,7 @@ window.bounce = {
 	 * THE RATCHET (Alan, device, 2026-09-20, vault test 2, Untitled 2: "repeatedly left scroll, lift, left
 	 * scroll" walks the page way out of bounds). One finger pulled to the allowance at the top, lifted,
 	 * grabbed again EARLY in the spring and pulled to the allowance again, five times over. The grab folds
-	 * what the spring still owed into the standing pan (add. 66, so nothing jumps), and the next pull is
+	 * what the spring still owed into the standing pan (so nothing jumps), and the next pull is
 	 * measured from zero again, so the page stands the allowance PLUS the fold past the top - and further
 	 * on every grab. Each cycle reports the page's total past the top while held (standing pan plus give).
 	 */
@@ -422,6 +625,59 @@ window.bounce = {
 		return { cycles, atRest: total(), allowance: router.cb.overscrollAllowancePx() };
 	},
 	/**
+	 * THE TWO-FINGER RATCHET. Infinite Canvas on, page at its top-left. Two fingers 300 px apart (spread 12 px for one frame to
+	 * engage, then back, so the scale ends where it began), drag right and down well past the allowance, lift, and grab again while the spring still has at least
+	 * half its way to go; sixty times over. A grab folds what the spring still owed into the standing pan (so nothing
+	 * jumps under the fingers); the drag that follows must then carry the page no further past its bound than the one
+	 * allowance. Each cycle reports, on both axes, how far past the bound the page stands: as the fingers land (pan plus
+	 * the spring's offset, before the grab), on the first drag frame (engaging moves nothing), and at the end of the drag.
+	 */
+	async pinchRatchet(cycles) {
+		const { view, overlay } = rig, router = overlay.router, sd = view.scrollDOM;
+		sd.scrollTop = 0; sd.scrollLeft = 0;
+		setPenInk(false);
+		await settle(8);
+		await new Promise(res => setTimeout(res, 1200));
+		await settle(4);
+		const box = sd.getBoundingClientRect(), x0 = box.left + box.width / 2, y0 = box.top + box.height / 2;
+		const ev = type => new PointerEvent(type, { pointerId: 912, pointerType: "touch" });
+		const put = (x, y, w) => { const h = (w || 300) / 2; router.touchPos.set(911, { x: x - h, y }); router.touchPos.set(912, { x: x + h, y }); };
+		const allowance = router.cb.overscrollAllowancePx();
+		// Past the bound, painted px: the page's pan plus the spring's offset, less the column's own rest on x
+		// (the drag band's ceiling side; 0 where the column has no centred rest).
+		const past = () => {
+			const p = overlay.viewportPan, b = overlay.overscrollBounceReadout(), rest = overlay.boundReadout.restCeilX || 0;
+			return { x: +((p.x + b.x) - rest).toFixed(3), y: +(p.y + b.y).toFixed(3) };
+		};
+		const steps = 12, travel = 3 * allowance;
+		const out = [];
+		for (let n = 0; n < cycles; n++) {
+			const atLand = past();
+			// The pinch engages only past the router's slop (12 px of spread): one frame spread 12 px, then back to
+			// 300 for the rest of the gesture, so the scale ends where it began and every frame is a drag frame.
+			put(x0, y0); router.beginPinch(ev("pointerdown"));
+			put(x0, y0, 312); router.updatePinch(ev("pointermove")); await rendered();
+			put(x0 + 2, y0 + 2); router.updatePinch(ev("pointermove")); await rendered();
+			const engaged = past();
+			for (let i = 1; i <= steps; i++) { put(x0 + 2 + travel * i / steps, y0 + 2 + travel * i / steps); router.updatePinch(ev("pointermove")); await rendered(); }
+			const held = past(), drag = !!overlay.boundReadout.dragFrame, scale = overlay.pinchScaleNow;
+			router.endPinch(ev("pointerup"), { x: x0 + 2 + travel, y: y0 + 2 + travel }); router.touchPos.clear();
+			let regrab = null;
+			for (let j = 0; j < 40; j++) {
+				await rendered();
+				const b = overlay.overscrollBounceReadout();
+				const owed = Math.hypot(b.x, b.y), from = Math.hypot(b.fromX, b.fromY);
+				if (b.active && from > 0 && owed >= 0.5 * from) { regrab = { frame: j, owed: +owed.toFixed(2), from: +from.toFixed(2) }; break; }
+				if (!b.active && j > 2) break;
+			}
+			out.push({ atLand, engaged, held, drag, scale, regrab });
+			if (!regrab) break;
+		}
+		for (let j = 0; j < 120; j++) { await rendered(); if (!overlay.overscrollBounceReadout().active) break; }
+		await settle(4);
+		return { cycles: out, atRest: past(), allowance };
+	},
+	/**
 	 * A FLICK INTO AN END (Alan, device, 2026-09-20: "it takes too long for the bounce to happen, when i
 	 * scroll left multiple times, especially if i do with momentum, it will hang for a bit too long").
 	 * One finger flicked LEFT on a note with no sideways range, from the middle of a tall note so the
@@ -430,12 +686,12 @@ window.bounce = {
 	 * how far past the left edge the page stands.
 	 */
 	/**
-	 * s135 direction check: which way a finger has to drag, at scrollLeft 0, to push the page against its
+	 * direction check: which way a finger has to drag, at scrollLeft 0, to push the page against its
 	 * OWN left edge, and what sign the pull carries there. Read on both directions and in both modes, so the
 	 * sideways give's ceiling side can be named from a measurement rather than from the sign convention.
 	 */
 	/**
-	 * s138(12): a flick into the open room. Canvas mode disables the fling today, so this reads whether a
+	 * A flick into the open room. Canvas mode disables the fling today, so this reads whether a
 	 * glide runs at all after the lift, how far the page travels once the finger is gone, and whether the
 	 * room grows to meet it. Driven leftward from the middle, which the direction check measured as the
 	 * way into the room rather than against the origin edge.
@@ -489,7 +745,7 @@ window.bounce = {
 		await settle(8);
 		await new Promise(res => setTimeout(res, 1200));
 		await settle(4);
-		// s144(4): SEEK TO THE FAR END AFTER THE SETTLE, NOT BEFORE IT. The expansion grows the range
+		// SEEK TO THE FAR END AFTER THE SETTLE, NOT BEFORE IT. The expansion grows the range
 		// while the rig settles - measured 9697 before and 10977 after - so a seek taken from the earlier
 		// number leaves the finger 1280 px INSIDE the range, and the drag then scrolls because it has room
 		// rather than because an end refused it. Seek, let the growth that the seek itself triggers settle,
@@ -625,22 +881,24 @@ const record: unknown[] = [];
 
 const CHOKE = "\t\tconst el = this.previewPaperEl;\n\t\tif (!el) return;\n\t\tthis.previewPaperEl = null;";
 const bypass = (reason: string) => `\t\tconst el = this.previewPaperEl;\n\t\tif (!el || reason === "${reason}") return;\n\t\tthis.previewPaperEl = null;`;
-const PLANTS: { env: string; from: string; to: string }[] = [
-	{ env: "HW_BOUNCE_PLANT_LEAVE_AT_OVERSHOOT", from: "const left = t >= 1 ? 0 : (1 - t) ** 3;", to: "const left = 1;" },
+const PINCH = /src[\\/]inline[\\/]InkOverlayPinch\.ts$/, MARGIN = /src[\\/]inline[\\/]InkOverlayColumnMargin\.ts$/, PAPER = /src[\\/]inline[\\/]InkOverlayPaperPinch\.ts$/;
+const PLANTS: { env: string; from: string; to: string; file?: RegExp }[] = [
+	{ env: "HW_BOUNCE_PLANT_LEAVE_AT_OVERSHOOT", file: MARGIN, from: "const left = t >= 1 ? 0 : (1 - t) ** 3;", to: "const left = 1;" },
 	// The ease runs 2 painted px past the rest before it ends: a spring, not a glide.
-	{ env: "HW_BOUNCE_PLANT_OVERSHOOT", from: "const left = t >= 1 ? 0 : (1 - t) ** 3;", to: "const left = t >= 1 ? 0 : (1 - t) ** 3 - t * 2 / Math.max(2, Math.abs(bx || by));" },
+	{ env: "HW_BOUNCE_PLANT_OVERSHOOT", file: MARGIN, from: "const left = t >= 1 ? 0 : (1 - t) ** 3;", to: "const left = t >= 1 ? 0 : (1 - t) ** 3 - t * 2 / Math.max(2, Math.abs(bx || by));" },
 	{ env: "HW_PAPER_PREVIEW_PLANT_BYPASS_BOUNCE_END", from: CHOKE, to: bypass("bounce-end") },
 	{ env: "HW_PAPER_PREVIEW_PLANT_BYPASS_INPUT", from: CHOKE, to: bypass("input") },
 	// A bounce the settle itself started keeps the element: this plant leaves it carrying the gesture's zoom, not the settled one.
 	{ env: "HW_PAPER_PREVIEW_PLANT_NO_RECOPY_AT_SETTLE", from: "\t\t\tif (this.bounceState) this.rebasePreviewPaper();\n", to: "\t\t\tif (this.bounceState) {}\n" },
 	// The bounce must carry the paper on the element: this plant leaves it on the scroller's background, as the prototype did.
-	{ env: "HW_PAPER_PREVIEW_PLANT_NO_BOUNCE_SWAP", from: "\t\tthis.beginPreviewPaper();\n", to: "" },
+	// Two edits. A bounce its settle's own commit starts finds the pinch's element still up, so its own put-up returns
+	// early and the settle keeps that element for it; the second edit has the settle take it down regardless, so no
+	// route leaves an element up for the bounce.
+	{ env: "HW_PAPER_PREVIEW_PLANT_NO_BOUNCE_SWAP", file: MARGIN, from: "\t\tthis.beginPreviewPaper();\n", to: "" },
+	{ env: "HW_PAPER_PREVIEW_PLANT_NO_BOUNCE_SWAP", from: "\t\t\tif (this.bounceState) this.rebasePreviewPaper();\n\t\t\telse this.endPreviewPaper(\"settle\");\n", to: "\t\t\tthis.endPreviewPaper(\"settle\");\n" },
 	// And the copy the bounce takes must be the settled zoom's: this plant leaves that element with no background at all.
-	{ env: "HW_PAPER_PREVIEW_PLANT_NO_BOUNCE_COPY", from: "\t\tcopyPreviewPaperBackground(el, cs);\n", to: "\t\tif (!this.bounceState) copyPreviewPaperBackground(el, cs);\n" },
-	// The pan writer never hands the pan to the paper: condition 2's paper reading on the glide frames goes red.
-	// It lives here now because the glide is where a live pan is read - a resting page carries none. Carried into this
-	// table on the route(e) merge: the loop above only applies plants that are entries here.
-	{ env: "HW_PAPER_PAN_PLANT_NO_PAN", from: "\t\tthis.writePaperPan();\n\t\tthis.writeInkLayerTransform();\n", to: "\t\tthis.writeInkLayerTransform();\n" },
+	// The element a settle keeps for its bounce is re-copied where the settle rebases it; the plant blanks it there instead.
+	{ env: "HW_PAPER_PREVIEW_PLANT_NO_BOUNCE_COPY", file: PAPER, from: "\t\tif (copyable) copyPreviewPaperBackground(el, cs, grid);\n", to: "\t\tif (copyable && !this.bounceState) copyPreviewPaperBackground(el, cs, grid);\n\t\telse if (copyable) el.style.backgroundImage = \"none\";\n" },
 ];
 
 beforeAll(async () => {
@@ -649,9 +907,9 @@ beforeAll(async () => {
 	const b = await build({ stdin: { contents: PAGE, resolveDir: fileURLToPath(new URL(".", import.meta.url)), loader: "ts", sourcefile: "overscrollBouncePage.ts" },
 		bundle: true, write: false, format: "iife", platform: "browser", alias: { obsidian: fileURLToPath(new URL("./iphoneObsidianStub.ts", import.meta.url)) },
 		plugins: active.length ? [{ name: "bounce-plants", setup(builder) {
-			builder.onLoad({ filter: /src[\\/]inline[\\/]InkOverlay\.ts$/ }, args => {
+			builder.onLoad({ filter: /src[\\/]inline[\\/](InkOverlay|InkOverlayPanSettle|InkOverlayColumnMargin|InkOverlayPaperPinch|InkOverlayPinch)\.ts$/ }, args => {
 				let text = readFileSync(args.path, "utf8").replace(/\r\n/g, "\n");
-				for (const pl of active) {
+				for (const pl of active.filter(x => (x.file ?? PINCH).test(args.path))) {
 					if (text.split(pl.from).length !== 2) throw new Error(`${pl.env}: anchor not found once`);
 					text = text.replace(pl.from, pl.to);
 					planted++;
@@ -669,16 +927,21 @@ afterAll(async () => {
 });
 
 const call = (p: Page, method: string, ...args: unknown[]) => p.evaluate(([m, a]) => (window as any).bounce[m](...a), [method, args] as const);
-async function open(tag: string, infinite = false) {
+async function open(tag: string, infinite = false, numbered = false, nested = false, minimal?: { app: string; theme: string }) {
 	const page = await browser.newPage({ viewport: { width: 1800, height: 900 }, deviceScaleFactor: 2, hasTouch: true });
 	const errors: string[] = [];
 	page.on("pageerror", e => errors.push(String(e.message).slice(0, 200)));
 	// The rule colour, without which the paper's gradients are invalid and the scroller paints no paper at all: this page
 	// asserted the pan PROPERTIES, which are written either way, so it never needed it until the paper became an element.
 	await page.setContent('<!doctype html><body style="margin:0; --background-modifier-border:#777777"></body>');
-	await page.addStyleTag({ content: css + REAL_OBSIDIAN_CSS });
+	if (minimal) {
+		await page.evaluate(() => document.body.classList.add("theme-light", "minimal-line-nums"));
+		await page.addStyleTag({ content: minimal.app });
+		await page.addStyleTag({ content: minimal.theme });
+		await page.addStyleTag({ content: css });
+	} else await page.addStyleTag({ content: css + REAL_OBSIDIAN_CSS });
 	await page.addScriptTag({ content: script });
-	const mounted = await call(page, "mount", infinite, tag) as any;
+	const mounted = await call(page, "mount", infinite, tag, numbered, numbered ? actualGutter : null, nested, !!minimal) as any;
 	return { page, errors, mounted };
 }
 const BOUNCE_MS = 500;
@@ -687,17 +950,17 @@ const FRAME_MS = 1000 / 60;
 const show = (v: unknown) => JSON.stringify(v);
 
 it("THE BOUNCE, ON THE ORIGIN EDGE: the settle springs the page back off its own top edge, eased, within the bound, onto the settle's own rest", async () => {
-	// s187 add. 2 (class A): MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
-	// router.beginPinch, the canvas-ON pinch since s179; mounted canvas off it pinched nothing at all and
+	// class A: MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
+	// router.beginPinch, the canvas-ON pinch since then; mounted canvas off it pinched nothing at all and
 	// the cell failed on its own premise, with no product fault behind it.
 	const { page, errors, mounted } = await open("shape", true);
 	try {
 		expect(mounted.strokes, "premise: the stroke committed").toBe(1);
-		// s189 [Architect]: THE DRIVE CHANGES, THE CLAIMS DO NOT. Under the canvas the same-centre round trip owes
+		// THE DRIVE CHANGES, THE CLAIMS DO NOT. Under the canvas the same-centre round trip owes
 		// 1 px sideways - the page stays where the fingers left it, so there is nothing to ease and the >= 15
 		// premise below cannot be met by any claim this cell makes. What the canvas does correct is the ORIGIN
 		// EDGE: zoom in about the ink, then out about a point 40 px below it, and the page ends with blank above
-		// its own top which the settle owes back - the s188 TOP drive, 26.33 px there. Every claim below is the
+		// its own top which the settle owes back - the TOP drive, 26.33 px there. Every claim below is the
 		// same claim, read on the axis the canvas actually corrects.
 		const { last, rows } = await call(page, "originEdgeOvershoot", mounted.inkMiddleX, mounted.natural.textCy) as { last: any; rows: any[] };
 		const later = await call(page, "later", 400) as any;
@@ -705,14 +968,14 @@ it("THE BOUNCE, ON THE ORIGIN EDGE: the settle springs the page back off its own
 		const end = rows.at(-1);
 		expect(errors).toEqual([]);
 		expect(end.k, "premise: back at 100%").toBeCloseTo(1, 6);
-		// s97 add. 21: the premise is that the settle owed a correction at all, not the old fitting clamp's
+		// The premise is that the settle owed a correction at all, not the old fitting clamp's
 		// 200..250 px. That clamp is gone with the settle, and the drive is the same-centre round trip that
 		// leaves the canvas's edge inside the pane - the one thing the bound still corrects. Measured on
-		// this drive: 19.00 px, the same correction the Engineer's trace reads at the settle.
+		// this drive: 19.00 px, the same correction the trace reads at the settle.
 
-		// s189 [Architect]: THE PREMISE READS THE CORRECTION THIS CELL ASSERTS ON, TWICE, FROM TWO SOURCES THAT
+		// THE PREMISE READS THE CORRECTION THIS CELL ASSERTS ON, TWICE, FROM TWO SOURCES THAT
 		// MUST AGREE. Under the canvas the origin-edge correction is the scroll commit's true-travel share
-		// (s189 (a)), not a pan-bound hit, so `boundMaxPx` stays at 1 by design and cannot stand for it -
+		// (by rule), not a pan-bound hit, so `boundMaxPx` stays at 1 by design and cannot stand for it -
 		// measured on this drive: boundMaxPx 1, boundHits 3, while the page travels 26.33 px over 23 eased frames.
 		// The bar is unchanged at 15. What changes is where it is read: the bounce's own fromY is the product
 		// grading itself, so the page's painted travel - the content box's top between the last preview frame and
@@ -723,19 +986,19 @@ it("THE BOUNCE, ON THE ORIGIN EDGE: the settle springs the page back off its own
 		expect(Math.abs(travelled - eased), `premise: the two readings agree - painted travel ${travelled.toFixed(2)} px against the ease's own ${eased.toFixed(2)} px`).toBeLessThanOrEqual(1);
 		const correction = end.contentTop - last.contentTop;
 		// CONDITION 1, THE REST: the page ends exactly where the settle's bound put it - the overlay's own
-		// correction. s97 add. 21: MAGNITUDE, because the direction reversed with the contract. The old
+		// correction. MAGNITUDE, because the direction reversed with the contract. The old
 		// fitting clamp pulled a clipped page RIGHT, back onto the pane; the bound that replaced it closes
 		// blank at the LEFT, so the page travels left and `correction` is negative where it used to be
 		// positive. Measured here: moved -19.00 px against a bound of 19.00. Comparing signed values
-		// reddens a page that moved exactly as far as it should, in the only direction s97 allows.
-		// s189: THE SAME CLAIM, AGAINST THE QUANTITY THAT CORRECTS HERE. The page rests where the settle said it
+		// reddens a page that moved exactly as far as it should, in the only direction a later ruling allows.
+		// THE SAME CLAIM, AGAINST THE QUANTITY THAT CORRECTS HERE. The page rests where the settle said it
 		// would; under the canvas what the settle hands the ease is the true-travel share, read as the bounce's
 		// own from-offset, and `boundMaxPx` (1 px) is the pan bound, which is not what moved the page. The two
 		// sources were required to agree within a pixel in the premise above, so this compares against the pair.
 		expect(Math.abs(Math.abs(correction) - eased), `the page rests where the settle put it: moved ${correction} px against the ${eased.toFixed(2)} px the ease was given (pan bound ${end.fitReadout.boundMaxPx} px, which is not what corrects under the canvas)`).toBeLessThanOrEqual(0.05);
 		// It animates: no single frame carries more than half of the correction (a jump carries all of it in one frame).
 		const steps = rows.map((r, i) => r.contentTop - (i === 0 ? last.contentTop : rows[i - 1].contentTop));
-		// s97 add. 21: HALF THE CORRECTION'S SIZE. `correction` is negative under the new bound (the page
+		// HALF THE CORRECTION'S SIZE. `correction` is negative under the new bound (the page
 		// travels left to close blank), so the old `correction / 2` was a negative ceiling on a positive
 		// maximum and could never hold.
 		expect(Math.max(...steps.map(Math.abs)), `no frame jumps: per-frame steps ${show(steps.map(s => Math.round(s * 10) / 10))}`).toBeLessThanOrEqual(Math.abs(correction) / 2);
@@ -745,7 +1008,7 @@ it("THE BOUNCE, ON THE ORIGIN EDGE: the settle springs the page back off its own
 		expect(Math.abs(first.bounce.fromY + correction), `it starts from the overshoot: offset ${first.bounce.fromY} against a correction of ${correction}`).toBeLessThanOrEqual(2);
 		// Toward the rest, never past it, never back toward the overshoot.
 		for (let i = 1; i < rows.length; i++) {
-			// s97 add. 21: the page now travels LEFT to close blank, so contentLeft falls toward the rest.
+			// The page now travels LEFT to close blank, so contentLeft falls toward the rest.
 			// The pair is the same claim with its inequalities the other way round.
 			expect(rows[i].contentTop, `frame ${i + 1} does not pass the rest`).toBeGreaterThanOrEqual(end.contentTop - 0.5);
 			expect(rows[i].contentTop, `frame ${i + 1} does not move back toward the overshoot`).toBeLessThanOrEqual(rows[i - 1].contentTop + 0.5);
@@ -764,7 +1027,7 @@ it("THE BOUNCE, ON THE ORIGIN EDGE: the settle springs the page back off its own
 		expect(end.bounce.x, "the offset ends at exactly zero").toBe(0);
 		expect(end.sizerX, "the text's translate at the end is the rest's own").toBeCloseTo(end.restX / end.cssScale, 9);
 		expect(Math.abs(later.contentTop - end.contentTop), "nothing moves afterwards").toBeLessThanOrEqual(0.01);
-		// s97 add. 7 and add. 21: THE REST IS THE HOST'S OWN LAYOUT, not inside the pane. The old fitting
+		// THE REST IS THE HOST'S OWN LAYOUT, not inside the pane. The old fitting
 		// clamp landed a clipped page back within the viewport; the bound that replaced it only forbids
 		// blank at the left and top, and a page hanging past the pane's edge is where Alan asked for it to
 		// be left. Measured on this drive: the canvas rests 19 px past the pane's left edge, at pan 0.
@@ -797,9 +1060,9 @@ it("THE BOUNCE, ON THE ORIGIN EDGE: the settle springs the page back off its own
 	} finally { await page.close(); }
 }, 240_000);
 
-it("PEN DOWN MID-BOUNCE: the bounce is cancelled before the contact is read, the stroke lands where the page rests, and a page standing past its bound resumes to it after the lift (s107)", async () => {
-	// s187 add. 2 (class A): MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
-	// router.beginPinch, the canvas-ON pinch since s179; mounted canvas off it pinched nothing at all and
+it("PEN DOWN MID-BOUNCE: the bounce is cancelled before the contact is read, the stroke lands where the page rests, and a page standing past its bound resumes to it after the lift", async () => {
+	// class A: MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
+	// router.beginPinch, the canvas-ON pinch since then; mounted canvas off it pinched nothing at all and
 	// the cell failed on its own premise, with no product fault behind it.
 	const { page, errors, mounted } = await open("pen", true);
 	try {
@@ -808,9 +1071,9 @@ it("PEN DOWN MID-BOUNCE: the bounce is cancelled before the contact is read, the
 		expect(errors).toEqual([]);
 
 		expect(r.before, "premise: a pen landed while the bounce was a quarter to three quarters of the way").not.toBeNull();
-		// s97 add. 70, test-only. The old premise asked the two mappings to differ by 20 px, which held
+		// Test-only. The old premise asked the two mappings to differ by 20 px, which held
 		// while a cancelled ease dropped its offset and the page jumped to its rest under the pen. Under
-		// add. 66 the cancel FOLDS that offset into the pan, so the page is already where the pen sees it
+		// The cancel FOLDS that offset into the pan, so the page is already where the pen sees it
 		// and the two mappings agree - measured 0 against a demanded 20. What the cell is really about
 		// survives and is asserted instead: the page does not move when the contact cancels the ease.
 		// That fails the moment the fold is removed, by the whole remaining offset.
@@ -818,7 +1081,7 @@ it("PEN DOWN MID-BOUNCE: the bounce is cancelled before the contact is read, the
 			`premise: the contact does not move the page (mid-bounce ${r.before.contentLeft}, at contact ${r.atContact.contentLeft})`).toBeLessThanOrEqual(1);
 		expect(r.atContact.bounce.active, "the contact cancelled the bounce").toBe(false);
 		expect(r.atContact.bounce.x, "the page is at its rest when the contact is read").toBe(0);
-		// s97 add. 70, test-only, same reason as the premise above: the cancel no longer throws the
+		// Test-only, same reason as the premise above: the cancel no longer throws the
 		// remaining offset away, it folds it into the pan, so the page's REST carries it - measured
 		// 36.39 against a rest of 0 with 36.39 still standing on the ease. The page on screen has not
 		// moved, which is the row above. What is asserted here now is that the fold is exact: the new
@@ -830,15 +1093,15 @@ it("PEN DOWN MID-BOUNCE: the bounce is cancelled before the contact is read, the
 		expect(r.strokeX, "the stroke committed").not.toBeNull();
 		expect(Math.abs(r.strokeX - r.expectedAtRest), `the stroke lands where the resting page puts it (through the bounce would be ${r.expectedThroughBounce})`).toBeLessThanOrEqual(3);
 		// DURING the stroke nothing moves - the row above (`atContact` vs `before`) already covers that,
-		// unchanged. s107 (Alan): nothing moves unless the page is past its bound, then it eases back - no
+		// unchanged. Alan: nothing moves unless the page is past its bound, then it eases back - no
 		// infinite blank standing forever. This pen catch folded a real standing offset into the pan
-		// (`atContact.restX` above, nonzero), so AFTER the pen lifts that offset is exactly what add.52's
-		// resume has to spend: the old row here asked for zero further motion, which was the pre-add.52 law
+		// (`atContact.restX` above, nonzero), so AFTER the pen lifts that offset is exactly what the ruling's
+		// resume has to spend: the old row here asked for zero further motion, which was the earlier law
 		// for a page whose only rest is 0. What survives is that the page reaches its bound and stops there,
 		// not that it never moves - the paired "already at rest" row below is the case with nothing to spend.
 		//
-		// THE EASE ITSELF, not just where it ends up (Reviewer): a mere park - the page silently placed at
-		// its bound with no ease at all - would satisfy a rest-only check but is not what add.52 does. Two
+		// THE EASE ITSELF, not just where it ends up: a mere park - the page silently placed at
+		// its bound with no ease at all - would satisfy a rest-only check but is not what the ruling does. Two
 		// endpoints, no per-frame sampling (this file reddens under seven-file load on timing): right after
 		// the lift the resumed bounce has just started (offset non-zero, decay not yet run a frame), and at
 		// rest it has finished (offset back to 0).
@@ -849,9 +1112,9 @@ it("PEN DOWN MID-BOUNCE: the bounce is cancelled before the contact is read, the
 	} finally { await page.close(); }
 }, 240_000);
 
-it("PEN DOWN AFTER THE BOUNCE HAS SETTLED: a page already at its bound has nothing to resume, so a caught-and-drawn stroke does not move it (s107, the paired control)", async () => {
-	// s187 add. 2 (class A): MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
-	// router.beginPinch, the canvas-ON pinch since s179; mounted canvas off it pinched nothing at all and
+it("PEN DOWN AFTER THE BOUNCE HAS SETTLED: a page already at its bound has nothing to resume, so a caught-and-drawn stroke does not move it (the paired control)", async () => {
+	// class A: MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
+	// router.beginPinch, the canvas-ON pinch since then; mounted canvas off it pinched nothing at all and
 	// the cell failed on its own premise, with no product fault behind it.
 	const { page, errors, mounted } = await open("pen", true);
 	try {
@@ -901,7 +1164,7 @@ it("PEN DOWN AFTER THE BOUNCE HAS SETTLED: a page already at its bound has nothi
  * rather than the page being parked silently, the offset reaches 0, and the page rests at the top
  * within a pixel.
  */
-it("PINNED GAP: a one-finger drag never reaches the assist pan in this rig, so no give is made and the page does not leave its end (s135: driven with the canvas ON, which is where the give now lives)", async () => {
+it("PINNED GAP: a one-finger drag never reaches the assist pan in this rig, so no give is made and the page does not leave its end (driven with the canvas ON, which is where the give now lives)", async () => {
 	const { page, errors } = await open("give-regrab", true);
 	try {
 		const r = await call(page, "giveRegrab") as any;
@@ -931,7 +1194,7 @@ it("PINNED GAP: a one-finger drag never reaches the assist pan in this rig, so n
 	} finally { await page.close(); }
 }, 240_000);
 
-it("INFINITE CANVAS ON: the give measures from the rest - grabbed mid-spring and pulled again, the page stands no further past its own top than the one allowance, and comes home (Alan, device, 2026-09-20; s135 moves this into canvas mode)", async () => {
+it("INFINITE CANVAS ON: the give measures from the rest - grabbed mid-spring and pulled again, the page stands no further past its own top than the one allowance, and comes home (Alan, device, 2026-09-20; the ruling moves this into canvas mode)", async () => {
 	const { page, errors } = await open("give-ratchet", true);
 	try {
 		const r = await call(page, "giveRatchet") as any;
@@ -957,7 +1220,38 @@ it("INFINITE CANVAS ON: the give measures from the rest - grabbed mid-spring and
 	} finally { await page.close(); }
 }, 240_000);
 
-it("INFINITE CANVAS ON: a flick into the page's own left edge - the glide ends at the end it hits and the spring starts at once, whatever residual the flick carried across it (Alan, device, 2026-09-20; s135 moves this into canvas mode)", async () => {
+it("INFINITE CANVAS ON: two fingers grabbed mid-spring and dragged out again, sixty times, never carry the page further past its top or left than the one allowance, and it comes home", async () => {
+	const { page, errors } = await open("pinch-ratchet", true);
+	try {
+		const r = await call(page, "pinchRatchet", 60) as any;
+		record.push({ cell: "pinch-ratchet", ...r });
+		expect(errors).toEqual([]);
+		const at = (i: number) => JSON.stringify(r.cycles[i]);
+		// THE INPUTS ARE RIGHT: sixty grabs, each a drag at the gesture's own scale, each pulled past the allowance on
+		// both axes on the first grab, and every grab but the last landed while the spring still owed half its way.
+		expect(r.allowance, "the host offers its allowance").toBe(96);
+		expect(r.cycles.length, `sixty grabs (${JSON.stringify(r.cycles.slice(-2))})`).toBe(60);
+		expect(r.cycles[0].held.x, `the first drag reaches the allowance on x (${at(0)})`).toBeGreaterThanOrEqual(r.allowance - 1);
+		expect(r.cycles[0].held.y, `the first drag reaches the allowance on y (${at(0)})`).toBeGreaterThanOrEqual(r.allowance - 1);
+		for (let i = 0; i < r.cycles.length; i++) {
+			const c = r.cycles[i];
+			expect(c.drag, `grab ${i + 1}: a drag frame (${at(i)})`).toBe(true);
+			if (i > 0) expect(c.atLand.x > 0 || c.atLand.y > 0, `grab ${i + 1}: landed with the page still past its bound (${at(i)})`).toBe(true);
+		}
+		// THE CLAIM, both axes, every grab: never further past the bound than the allowance; engaging moves nothing.
+		const worst = { x: Math.max(...r.cycles.map((c: any) => c.held.x)), y: Math.max(...r.cycles.map((c: any) => c.held.y)) };
+		expect(r.cycles.map((c: any, i: number) => `grab ${i + 1}: x ${c.held.x <= r.allowance + 1 ? "within" : "past"}, y ${c.held.y <= r.allowance + 1 ? "within" : "past"}`),
+			`held no further past the bound than the allowance (worst x ${worst.x}, y ${worst.y})`)
+			.toEqual(r.cycles.map((_: any, i: number) => `grab ${i + 1}: x within, y within`));
+		for (let i = 0; i < r.cycles.length; i++) {
+			const c = r.cycles[i];
+			expect(Math.abs(c.engaged.x - c.atLand.x) <= 3 && Math.abs(c.engaged.y - c.atLand.y) <= 3, `grab ${i + 1}: engaging moved the page no more than the fingers' 2 px (${at(i)})`).toBe(true);
+		}
+		expect(Math.max(Math.abs(r.atRest.x), Math.abs(r.atRest.y)), `the page comes home after the last lift (${JSON.stringify(r.atRest)})`).toBeLessThanOrEqual(0.5);
+	} finally { await page.close(); }
+}, 240_000);
+
+it("INFINITE CANVAS ON: a flick into the page's own left edge - the glide ends at the end it hits and the spring starts at once, whatever residual the flick carried across it (Alan, device, 2026-09-20; the ruling moves this into canvas mode)", async () => {
 	const { page, errors } = await open("flick-into-end", true);
 	try {
 		const r = await call(page, "flickIntoEnd", 1) as any;
@@ -966,7 +1260,7 @@ it("INFINITE CANVAS ON: a flick into the page's own left edge - the glide ends a
 		const drive = JSON.stringify({ held: r.held, flingEnd: r.flingEnd, springStart: r.springStart, home: r.home, first: r.frames.slice(0, 6) });
 		// THE INPUTS ARE RIGHT: the assist carried the flick, the page had no sideways range, the give was held.
 		expect(r.held.engaged, `the assist carries the flick (${drive})`).toBe(true);
-		// s144: canvas mode GRANTS sideways range (measured 1690 px), so "no range" is not what makes this
+		// Canvas mode GRANTS sideways range (measured 1690 px), so "no range" is not what makes this
 		// an end. The scroller sitting at 0 is: a rightward flick there is refused by the origin edge.
 		expect(r.held.scrollLeft, `premise: the page is on its own left edge (${drive})`).toBe(0);
 		expect(r.held.pullX, `the flick pulled at the left edge, on the ceiling side (${drive})`).toBeGreaterThan(10);
@@ -983,7 +1277,7 @@ it("INFINITE CANVAS ON: a flick into the page's own left edge - the glide ends a
 	} finally { await page.close(); }
 }, 240_000);
 
-it("CANVAS OFF: the page does not give at its top edge - no pull, no spring, the scroller stays inside its range (s135)", async () => {
+it("CANVAS OFF: the page does not give at its top edge - no pull, no spring, the scroller stays inside its range", async () => {
 	const { page, errors } = await open("give-ratchet-off");
 	try {
 		const r = await call(page, "giveRatchet") as any;
@@ -1002,7 +1296,7 @@ it("CANVAS OFF: the page does not give at its top edge - no pull, no spring, the
 	} finally { await page.close(); }
 }, 240_000);
 
-it("CANVAS OFF: a flick into an end neither gives nor springs (s135)", async () => {
+it("CANVAS OFF: a flick into an end neither gives nor springs", async () => {
 	const { page, errors } = await open("flick-into-end-off");
 	try {
 		const r = await call(page, "flickIntoEnd") as any;
@@ -1018,7 +1312,7 @@ it("CANVAS OFF: a flick into an end neither gives nor springs (s135)", async () 
 	} finally { await page.close(); }
 }, 240_000);
 
-it("INFINITE CANVAS ON: a flick into the open room glides on after the lift, with room still ahead of it (s138 item 12)", async () => {
+it("INFINITE CANVAS ON: a flick into the open room glides on after the lift, with room still ahead of it", async () => {
 	const { page, errors } = await open("flick-into-room", true);
 	try {
 		const r = await call(page, "flickIntoRoom") as any;
@@ -1042,8 +1336,8 @@ it("INFINITE CANVAS ON: a flick into the open room glides on after the lift, wit
 }, 240_000);
 
 it("A BOUNCE AFTER A ZOOM CHANGE: the preview element rides it with the settled zoom's rules, not the gesture's", async () => {
-	// s187 add. 2 (class A): MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
-	// router.beginPinch, the canvas-ON pinch since s179; mounted canvas off it pinched nothing at all and
+	// class A: MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
+	// router.beginPinch, the canvas-ON pinch since then; mounted canvas off it pinched nothing at all and
 	// the cell failed on its own premise, with no product fault behind it.
 	const { page, errors, mounted } = await open("zoom-change", true);
 	try {
@@ -1063,14 +1357,14 @@ it("A BOUNCE AFTER A ZOOM CHANGE: the preview element rides it with the settled 
 	} finally { await page.close(); }
 }, 240_000);
 
-it("MEASUREMENT s135: which way a drag pushes the page against its own origin edge, and what the far end does in canvas mode", async () => {
+it("MEASUREMENT: which way a drag pushes the page against its own origin edge, and what the far end does in canvas mode", async () => {
 	const ROWS = [
 		{ tag: "off-right", infinite: false, axis: "x", dir: 1, farEnd: false },
 		{ tag: "off-left", infinite: false, axis: "x", dir: -1, farEnd: false },
 		{ tag: "on-right", infinite: true, axis: "x", dir: 1, farEnd: false },
 		{ tag: "on-left", infinite: true, axis: "x", dir: -1, farEnd: false },
 		{ tag: "on-far-end-y", infinite: true, axis: "y", dir: -1, farEnd: true },
-		// s144(4) again: y's far end RECEDES (the grow rule keeps headroom ahead of the frontier), so the
+		// Again: y's far end RECEDES (the grow rule keeps headroom ahead of the frontier), so the
 		// x axis is the one whose far end can actually be reached - measured range 1690 there, unchanged
 		// across a drag. This row is where the far-end pull risk can fire at all.
 		{ tag: "on-far-end-x", infinite: true, axis: "x", dir: -1, farEnd: true },
@@ -1101,8 +1395,8 @@ it("INFINITE CANVAS ON: a page pushed toward the room it grows into does not bou
 }, 240_000);
 
 it("TIMED: the glide lasts half a second on the frame clock, within one frame, and its offset only ever shrinks", async () => {
-	// s187 add. 2 (class A): MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
-	// router.beginPinch, the canvas-ON pinch since s179; mounted canvas off it pinched nothing at all and
+	// class A: MOUNTED WITH THE CANVAS ON. This arm drives its gesture through
+	// router.beginPinch, the canvas-ON pinch since then; mounted canvas off it pinched nothing at all and
 	// the cell failed on its own premise, with no product fault behind it.
 	const { page, errors, mounted } = await open("timed", true);
 	try {
@@ -1123,3 +1417,290 @@ it("TIMED: the glide lasts half a second on the frame clock, within one frame, a
 		for (const f of active) expect(Math.sign(f.x) === 0 || Math.sign(f.x) === Math.sign(active[0].fromX), "and never crosses the rest").toBe(true);
 	} finally { await page.close(); }
 }, 240_000);
+
+
+it("GUTTER TOP BOUNCE: line numbers track their line every frame at 55 and 100 percent", async () => {
+	const arms: any[] = [];
+	for (const scale of [0.55, 1]) {
+		const { page, errors, mounted } = await open("gutter-" + scale, true, true);
+		try {
+			const result = await call(page, "gutterTopPull", scale) as any;
+			const active = result.frames.filter((row: any) => row.active && Math.abs(row.bounceY) > 0.5);
+			const arm = { cell: "gutter-top-bounce", scale, bounceFired: active.length > 0, mounted, errors, ...result };
+			arms.push(arm); record.push(arm);
+		} finally { await page.close(); }
+	}
+	// Collect both arms before asserting, so a red 55% arm still reports the 100% premise.
+	console.log("GUTTER TOP BOUNCE", show(arms.map(arm => ({ scale: arm.scale, bounceFired: arm.bounceFired,
+		frames: arm.frames.length, maxDrift: Math.max(...arm.frames.map((row: any) => Math.abs(row.offset - arm.rest.offset))) }))));
+	for (const arm of arms) {
+		expect(arm.errors, show(arm)).toEqual([]);
+		if (actualGutter) {
+			expect(arm.mounted.strokes, "all saved strokes loaded").toBe(actualGutter.strokes);
+			expect(arm.mounted.pageId).toBe(actualGutter.pageId);
+		}
+		const restPairs = new Map<number, any>(arm.rest.pairs.map((pair: any) => [pair.number, pair]));
+		expect(arm.frames.length, "nonempty frame evidence").toBeGreaterThan(1);
+		expect(arm.rest.scale, "premise: requested zoom").toBeCloseTo(arm.scale, 6);
+		if (arm.scale === 0.55) expect(arm.bounceFired, "premise: 55% top pull really bounces").toBe(true);
+		expect(arm.final.active, "bounce must finish").toBe(false);
+		for (const row of arm.frames) {
+			expect(row.number, "same document line throughout").toBe(arm.rest.number);
+			expect(row.gutterParentIsScroller, "gutters are direct scroller children").toBe(true);
+			const visible = row.pairs.filter((pair: any) => pair.visible);
+			expect(visible.length, "visible matching lines each frame").toBeGreaterThan(0);
+			for (const pair of visible) {
+				const rest = restPairs.get(pair.number);
+				expect(rest, "rest geometry for line " + pair.number).toBeDefined();
+				expect(pair.offset, "visible gutter for line " + pair.number).not.toBeNull();
+				expect(rest.offset, "rest gutter for line " + pair.number).not.toBeNull();
+				expect(Math.abs(pair.offset - rest.offset), show({ scale: arm.scale, phase: row.phase, rest, pair })).toBeLessThanOrEqual(0.5);
+			}
+			expect(Math.abs(row.offset - arm.rest.offset), show({ scale: arm.scale, rest: arm.rest, row })).toBeLessThanOrEqual(0.5);
+		}
+	}
+});
+
+// Image analysis runs only after capture. The browser decodes lossless PNGs without resampling;
+// each foreground mask, crop x range and search margin is frozen from the unplanted rest image.
+async function glyphPixels(page: Page, png: string, brackets: any[], frozen?: any) {
+	return page.evaluate(async ({ png, brackets, frozen }) => {
+		const bitmap = await createImageBitmap(await (await fetch("data:image/png;base64," + png)).blob());
+		const canvas = new OffscreenCanvas(bitmap.width, bitmap.height), ctx = canvas.getContext("2d")!;
+		ctx.drawImage(bitmap, 0, 0);
+		const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+		const s = bitmap.width / brackets[0].viewport.width;
+		if (bitmap.height / brackets[0].viewport.height !== s || s < 2) throw new Error("insufficient PNG precision for fixed 0.5 CSS px oracle");
+		if (frozen && (frozen.s !== s || frozen.width !== bitmap.width || frozen.height !== bitmap.height)) throw new Error("PNG mapping changed");
+		const gray = (x: number, y: number) => {
+			if (x < 0 || y < 0 || x >= bitmap.width || y >= bitmap.height) throw new Error("glyph ROI outside viewport");
+			const i = (y * bitmap.width + x) * 4; return Math.min(data[i]!, data[i + 1]!, data[i + 2]!);
+		};
+		const results: any = {}, templates: any = {};
+		for (const key of ["numberGlyph", "textGlyph"]) {
+			const box = brackets[0][key]; let template = frozen?.templates[key];
+			if (!template) {
+				const x = Math.floor(box.x * s), right = Math.ceil((box.x + box.width) * s);
+				const y = Math.floor(box.y * s), bottom = Math.ceil((box.y + box.height) * s), width = right - x;
+				const values: number[] = [];
+				for (let py = y; py < bottom; py++) for (let px = x; px < right; px++) values.push(gray(px, py));
+				values.sort((a, b) => a - b);
+				const low = values[0]!, background = values[Math.floor(values.length * 0.8)]!;
+				if (background - low < 50) throw new Error("ambiguous rest glyph foreground");
+				const threshold = low + (background - low) * 0.3;
+				const rows: number[][] = [];
+				for (let py = y; py < bottom; py++) rows.push(Array.from({ length: width }, (_, dx) => gray(x + dx, py) < threshold ? 1 : 0));
+				const first = rows.findIndex(row => row.reduce((a, b) => a + b, 0) >= 2);
+				let last = rows.length - 1; while (last >= 0 && rows[last]!.reduce((a, b) => a + b, 0) < 2) last--;
+				if (first < 0 || last - first < 2) throw new Error("missing rest glyph rows");
+				template = { x, width, height: last - first + 1, threshold, mask: rows.slice(first, last + 1).flat(), restTop: y + first, marginCSS: 2.5 };
+			}
+			templates[key] = template;
+			const left = Math.floor(box.x * s);
+			if (Math.abs(left - template.x) > 1 || brackets.some(row => row.number !== brackets[0].number)) throw new Error("glyph identity or horizontal ROI changed");
+			let top = template.restTop, score = 1, ambiguity = 1;
+			let searchTop = top, searchBottom = top + template.height;
+			if (frozen) {
+				searchTop = Math.floor((Math.min(...brackets.map(row => row[key].y)) - template.marginCSS) * s);
+				searchBottom = Math.ceil((Math.max(...brackets.map(row => row[key].y + row[key].height)) + template.marginCSS) * s);
+				const candidates: { y: number; score: number }[] = [];
+				for (let y = searchTop; y <= searchBottom - template.height; y++) {
+					let intersection = 0, union = 0;
+					for (let dy = 0; dy < template.height; dy++) for (let dx = 0; dx < template.width; dx++) {
+						const actual = gray(template.x + dx, y + dy) < template.threshold ? 1 : 0, expected = template.mask[dy * template.width + dx];
+						intersection += actual && expected ? 1 : 0; union += actual || expected ? 1 : 0;
+					}
+					candidates.push({ y, score: union ? intersection / union : 0 });
+				}
+				candidates.sort((a, b) => b.score - a.score);
+				if (!candidates.length) throw new Error("empty glyph search");
+				({ y: top, score } = candidates[0]!);
+				ambiguity = score - (candidates.find(c => Math.abs(c.y - top) >= 2 * s)?.score ?? 0);
+			}
+			const crop = new OffscreenCanvas(template.width + 8, searchBottom - searchTop + 8), cc = crop.getContext("2d")!;
+			cc.drawImage(bitmap, template.x, searchTop, template.width, searchBottom - searchTop, 4, 4, template.width, searchBottom - searchTop);
+			cc.strokeStyle = "red"; cc.strokeRect(3.5, top - searchTop + 3.5, template.width + 1, template.height + 1);
+			const blob = await crop.convertToBlob({ type: "image/png" });
+			const annotated = await new Promise<string>(resolve => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]!); reader.readAsDataURL(blob); });
+			results[key] = { top, score, ambiguity, valid: score >= 0.45 && ambiguity >= 0.06, searchTop, searchBottom, annotated };
+		}
+		bitmap.close();
+		return { s, width: canvas.width, height: canvas.height, templates, results, p: (results.numberGlyph.top - results.textGlyph.top) / s };
+	}, { png, brackets, frozen });
+}
+
+// Separate horizontal oracle: frozen foreground masks move over the bracketed glyph
+// rectangles. Both coordinates come from one PNG; rect reads only bound the search.
+async function leftGlyphPixels(page: Page, png: string, bracket: any[], frozen?: any) {
+	return page.evaluate(async ({png,bracket,frozen}) => {
+		const bitmap=await createImageBitmap(await(await fetch("data:image/png;base64,"+png)).blob());
+		const canvas=new OffscreenCanvas(bitmap.width,bitmap.height),ctx=canvas.getContext("2d")!;
+		ctx.drawImage(bitmap,0,0);const data=ctx.getImageData(0,0,bitmap.width,bitmap.height).data;
+		const s=bitmap.width/bracket[0].viewport.width;
+		if(s<2||bitmap.height/bracket[0].viewport.height!==s||(frozen&&frozen.s!==s))throw new Error("invalid horizontal PNG mapping");
+		const gray=(x:number,y:number)=>{if(x<0||y<0||x>=bitmap.width||y>=bitmap.height)throw new Error("horizontal ROI outside PNG");
+			const i=(y*bitmap.width+x)*4;return Math.min(data[i]!,data[i+1]!,data[i+2]!);};
+		const templates:any={},glyphs:any={};
+		for(const key of ["numberGlyph","textGlyph"]){
+			const box=bracket[0][key];let template=frozen?.templates[key];
+			if(!template){
+				const x=Math.floor(box.x*s),y=Math.floor(box.y*s),w=Math.ceil(box.width*s),h=Math.ceil(box.height*s);
+				const values=[];for(let dy=0;dy<h;dy++)for(let dx=0;dx<w;dx++)values.push(gray(x+dx,y+dy));
+				const sorted=[...values].sort((a,b)=>a-b),low=sorted[0]!,bg=sorted[Math.floor(sorted.length*.8)]!;
+				if(bg-low<50)throw new Error("indistinct horizontal rest glyph");
+				const threshold=low+(bg-low)*.3;let minX=w,maxX=-1,minY=h,maxY=-1;
+				for(let dy=0;dy<h;dy++)for(let dx=0;dx<w;dx++)if(values[dy*w+dx]!<threshold){minX=Math.min(minX,dx);maxX=Math.max(maxX,dx);minY=Math.min(minY,dy);maxY=Math.max(maxY,dy);}
+				if(maxX-minX<2||maxY-minY<2)throw new Error("missing horizontal rest glyph");
+				const mask=[];for(let dy=minY;dy<=maxY;dy++)for(let dx=minX;dx<=maxX;dx++)mask.push(gray(x+dx,y+dy)<threshold?1:0);
+				template={threshold,mask,width:maxX-minX+1,height:maxY-minY+1,restX:x+minX,restY:y+minY,marginCSS:2.5};
+			}
+			templates[key]=template;
+			let result={x:template.restX,y:template.restY,score:1,ambiguity:1};
+			if(frozen){
+				const x0=Math.floor((Math.min(...bracket.map(r=>r[key].x))-template.marginCSS)*s);
+				const x1=Math.ceil((Math.max(...bracket.map(r=>r[key].x+r[key].width))+template.marginCSS)*s)-template.width;
+				const y0=Math.floor((Math.min(...bracket.map(r=>r[key].y))-template.marginCSS)*s);
+				const y1=Math.ceil((Math.max(...bracket.map(r=>r[key].y+r[key].height))+template.marginCSS)*s)-template.height;
+				const candidates=[];
+				for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
+					let intersection=0,union=0;
+					for(let dy=0;dy<template.height;dy++)for(let dx=0;dx<template.width;dx++){
+						const actual=gray(x+dx,y+dy)<template.threshold,expected=!!template.mask[dy*template.width+dx];
+						if(actual&&expected)intersection++;if(actual||expected)union++;
+					}
+					candidates.push({x,y,score:union?intersection/union:0});
+				}
+				candidates.sort((a,b)=>b.score-a.score);const best=candidates[0];if(!best)throw new Error("empty horizontal search");
+				result={...best,ambiguity:best.score-(candidates.find(c=>Math.abs(c.x-best.x)>=2*s||Math.abs(c.y-best.y)>=2*s)?.score??0)};
+			}
+			glyphs[key]={...result,valid:result.score>=.45&&result.ambiguity>=.06};
+		}
+		bitmap.close();return {s,templates,glyphs,offset:(glyphs.numberGlyph.x-glyphs.textGlyph.x)/s};
+	},{png,bracket,frozen});
+}
+
+for (const cell of [
+	{key:"left",name:"GUTTER LEFT FINGER ONSET: nested Minimal absolute gutters retain horizontal placement through contact and endpoint",sticky:false,top:false},
+	{key:"top",name:"GUTTER TOP BOUNCE OBSIDIAN DOM PIXELS: paired painted glyphs follow nested Minimal gutters at 100 percent",sticky:false,top:true},
+	{key:"sticky",name:"GUTTER STICKY GUARD: nested sticky gutters retain both offsets through left pull",sticky:true,top:false},
+]) it.skipIf(!actualGutter)(cell.name, async()=>{
+	if(!process.env.HW_BOUNCE_OUT)throw new Error("artifact output required for left finger cell");
+	const output=process.env.HW_BOUNCE_OUT+"."+cell.key+"-pixels",arms:any[]=[];
+	mkdirSync(output,{recursive:true});
+	// Use sealed real app/theme files. No fixture rule replaces the inherited gutter positioning.
+	const styles:any={};
+	for(const [key,variable] of [["app","HW_GUTTER_APP_CSS"],["theme","HW_GUTTER_MINIMAL_CSS"]] as const){
+		const path=process.env[variable],expected=process.env[variable+"_SHA256"];
+		if(!path||!expected)throw new Error("sealed stylesheet required: "+variable);
+		const bytes=readFileSync(path,"utf8"),hash=await sha256(bytes);
+		if(hash!==expected)throw new Error("stylesheet hash mismatch: "+variable);
+		styles[key]={path,sha256:hash,bytes:new TextEncoder().encode(bytes).length,content:bytes};
+		writeFileSync(output+"/"+key+".css",bytes);
+	}
+	const theme=cell.sticky?styles.theme.content.replace("position: absolute !important;\n  z-index: 0;\n  margin-inline-end: 0;", "position: sticky !important;\n  z-index: 0;\n  margin-inline-end: 0;"):styles.theme.content;
+	if(cell.sticky&&theme===styles.theme.content)throw new Error("Minimal gutter rule not uniquely replaced for sticky guard");
+	const minimal={app:styles.app.content,theme};
+	writeFileSync(output+"/plugin.css",css);
+	const styleSeal={app:{...styles.app,content:undefined},theme:{...styles.theme,content:undefined},pluginSha256:await sha256(css)};
+	writeFileSync(output+"/styles.json",JSON.stringify(styleSeal,null,2));
+	for(const scale of [1]){
+		const {page,errors,mounted}=await open("left-finger-"+scale,true,true,true,minimal),cdp=await page.context().newCDPSession(page);
+		const arm:any={scale,errors,mounted,styleSeal,reportedBoundary:"LEFT boundary (report); not a finger-direction claim",drivenDirection:"positive-x/rightward finger",captures:[],invalid:[],trajectory:[]};arms.push(arm);record.push(arm);
+		try{
+			arm.rest=await call(page,"gutterLeftPrepare",scale);
+			// Logical zero alone is insufficient: the rendered sizer must coincide with
+			// the layout edge from scroller padding and settled column margin before input.
+			if(arm.rest.active||Math.abs(arm.rest.logicalPanY)>.5||Math.abs(arm.rest.scrollLeft)>.5||Math.abs(arm.rest.logicalPanX)>.5||Math.abs(arm.rest.transformX)>.5||
+				Math.abs(arm.rest.sizerX-arm.rest.layoutBoundaryX)>.5)throw new Error("unproved logical/rendered left boundary");
+			if(arm.rest.position!==(cell.sticky?"sticky":"absolute")||arm.rest.left!=="0px"||arm.rest.insetInlineStart!=="0px"||
+				arm.rest.containerPosition!=="static"||arm.rest.sizerPosition!=="static"||arm.rest.scrollerPosition!=="relative"||
+				!arm.rest.bodyClasses.includes("minimal-line-nums")||arm.rest.geometry.scroller.padding[3]==="0px")
+				throw new Error("inherited Minimal absolute gutter/ancestor/padding premise missing");
+			if(arm.rest.sizerComputedTransform!=="none")throw new Error("sizer containing block already transformed before contact");
+			arm.styleRules=await page.evaluate(()=>Array.from(document.styleSheets).flatMap(sheet=>{
+				try{return Array.from(sheet.cssRules).map(rule=>rule.cssText).filter(text=>/cm-gutters|cm-sizer|cm-contentContainer|cm-scroller|minimal-line-nums/.test(text));}
+				catch{return ["unreadable stylesheet: "+sheet.href];}
+			}));
+			const images:any[]=[];
+			const capture=async(phase:string)=>{
+				const before:any=await call(page,"gutterLeftRead"),png=await page.screenshot({type:"png",scale:"device",fullPage:false}),after:any=await call(page,"gutterLeftRead");
+				const path=output+"/"+scale+"-"+phase+".png";writeFileSync(path,png);
+				const image={phase,before,after,path,sha256:await sha256(png),latencyMs:after.t-before.t,png:png.toString("base64")};images.push(image);return image;
+			};
+			const rest=await capture("before-contact"),frozen=await leftGlyphPixels(page,rest.png,[rest.before,rest.after]);
+			arm.frozen=frozen;
+			// Independent endpoint is the verified pre-contact left boundary, never a
+			// value read from the production bounce target or its final position.
+			arm.expectedEndpoint={sizerX:arm.rest.layoutBoundaryX,numberX:frozen.glyphs.numberGlyph.x/frozen.s,textX:frozen.glyphs.textGlyph.x/frozen.s,logicalPanX:0,scrollLeft:0};
+			const x=Math.min(arm.rest.scrollerX+500,arm.rest.viewport.width-300),y=Math.max(arm.rest.line.y+40,150);
+			const send=async(type:"touchStart"|"touchMove"|"touchEnd",delta:number)=>{const px=x+(cell.top?0:delta),py=y+(cell.top?delta:0);
+				arm.trajectory.push({type,x:px,y:py,contacts:type==="touchEnd"?0:1});
+				await cdp.send("Input.dispatchTouchEvent",{type,touchPoints:type==="touchEnd"?[]:[{x:px,y:py,id:71,radiusX:8,radiusY:8,force:1}]});
+			};
+			await send("touchStart",0);await capture("contact-before-movement");
+			for(let i=1;i<=24;i++){await send("touchMove",10*i);await capture("contact-move-"+i);}
+			await page.waitForTimeout(150);await capture("held-before-release");await send("touchEnd",240);await capture("release");
+			for(let i=0;i<30;i++)await capture("settle-"+i);
+			arm.final=await call(page,"gutterLeftRead");arm.input=await call(page,"gutterLeftFinish");
+			for(const image of images){
+				const sample:any={...image,png:undefined};
+				try{const result=await leftGlyphPixels(page,image.png,[image.before,image.after],frozen);sample.glyphs=result.glyphs;
+					sample.offset=result.offset;sample.drift=Math.abs(result.offset-frozen.offset);
+					sample.verticalDrift=Math.abs((result.glyphs.numberGlyph.y-result.glyphs.textGlyph.y)/result.s-
+						(frozen.glyphs.numberGlyph.y-frozen.glyphs.textGlyph.y)/frozen.s);
+					sample.valid=Object.values(result.glyphs).every((g:any)=>g.valid)&&image.latencyMs<=250;
+					if(!sample.valid)arm.invalid.push({phase:image.phase,reason:"ambiguous horizontal capture",glyphs:sample.glyphs});
+				}catch(error){sample.valid=false;arm.invalid.push({phase:image.phase,reason:String(error)});}
+				arm.captures.push(sample);
+			}
+			arm.domRestored=await call(page,"gutterLeftReset");
+			const restored=await capture("restored-dom"),restoredPixels=await leftGlyphPixels(page,restored.png,[restored.before,restored.after],frozen);
+			arm.restoredPixels=restoredPixels;
+		}catch(error){arm.invalid.push({reason:String(error)});}
+		finally{await cdp.detach();await page.close();}
+	}
+	for(const arm of arms){
+		arm.rectFindings=(arm.input?.rows||[]).map((row:any)=>({t:row.t,x:Math.abs((row.gutter.x-row.line.x)-(arm.rest.gutter.x-arm.rest.line.x)),y:Math.abs(row.offset-arm.rest.offset)}));
+		arm.rectFailures=arm.rectFindings.filter((row:any)=>row.x>.5||row.y>.5);
+	}
+	writeFileSync(output+"/readout.json",JSON.stringify(arms,null,2));
+	for(const arm of arms){
+		expect(arm.errors).toEqual([]);expect(arm.invalid,show(arm.invalid)).toEqual([]);
+		expect(arm.mounted.strokes).toBe(actualGutter!.strokes);expect(arm.mounted.pageId).toBe(actualGutter!.pageId);expect(arm.mounted.textLines).toBe(61);
+		expect(arm.rest.scale).toBeCloseTo(arm.scale,6);expect(arm.rest.typedTop,"specified top auto").toBe("auto");
+		const events=arm.input.events,down=events.find((e:any)=>e.type==="pointerdown"),moves=events.filter((e:any)=>e.type==="pointermove"),up=events.find((e:any)=>e.type==="pointerup");
+		expect(down,"DOM touch down delivered").toBeDefined();expect(up,"DOM touch release delivered").toBeDefined();expect(moves.length).toBe(24);
+		expect(events.every((e:any)=>e.isTrusted&&e.pointerType==="touch"&&e.contacts<=1&&e.type!=="pointercancel"),"one browser-dispatched touch, no cancellation").toBe(true);
+		const pre=arm.captures.find((s:any)=>s.phase==="contact-before-movement"),first=arm.captures.find((s:any)=>s.phase==="contact-move-1");
+		expect(pre.after.t).toBeLessThan(moves[0].t);expect(first.before.t).toBeLessThan(up.t);
+		expect(pre.before.contacts).toBe(1);expect(first.before.contacts).toBe(1);expect(first.after.contacts).toBe(1);
+		expect(moves[moves.length-1][cell.top?"y":"x"]).toBeGreaterThan(down[cell.top?"y":"x"]+200);
+		expect(arm.input.rows.some((r:any)=>r.active&&Math.abs(cell.top?r.bounceY:r.bounceX)>.5),"horizontal bounce actually occurred").toBe(true);
+		for(const row of arm.input.rows){expect(row.nested).toBe(1);expect(row.direct).toBe(0);expect(row.position).toBe(cell.sticky?"sticky":"absolute");expect(row.left).toBe("0px");expect(row.insetInlineStart).toBe("0px");
+			expect(row.containerPosition).toBe("static");expect(row.sizerPosition).toBe("static");expect(row.scrollerPosition).toBe("relative");
+			expect(Math.abs(row.offset-arm.rest.offset),"retained vertical rect alignment").toBeLessThanOrEqual(.5);
+			expect(Math.abs((row.gutter.x-row.line.x)-(arm.rest.gutter.x-arm.rest.line.x)),"outer gutter/text horizontal layout").toBeLessThanOrEqual(.5);}
+		expect(first.before.sizerTransform,"sizer transform written on first movement").not.toBe("");
+		for(const sample of arm.captures.filter((s:any)=>s.phase.startsWith("contact-move-")||s.phase==="held-before-release"))
+			expect(sample.before.sizerComputedTransform,"containing block during held pull").not.toBe("none");
+		expect(arm.final.sizerTransform,"inline transform cleared after bounce").toBe("");
+		expect(arm.final.sizerComputedTransform).toBe("none");
+		expect(arm.final.active).toBe(false);expect(arm.final.contacts).toBe(0);
+		expect(Math.abs(arm.final.sizerX-arm.expectedEndpoint.sizerX),"independent rendered left endpoint").toBeLessThanOrEqual(.5);
+		expect(Math.abs(arm.final.logicalPanX-arm.expectedEndpoint.logicalPanX),"logical left endpoint").toBeLessThanOrEqual(.5);
+		expect(Math.abs(arm.final.scrollLeft-arm.expectedEndpoint.scrollLeft)).toBeLessThanOrEqual(.5);
+		expect(Object.values(arm.restoredPixels.glyphs).every((g:any)=>g.valid),"restoration glyphs unambiguous").toBe(true);
+		expect(arm.domRestored.glyphDomRestored,"exact original glyph DOM restored").toBe(true);
+		expect(Math.abs(arm.restoredPixels.offset-arm.frozen.offset),"exact glyph DOM restoration").toBeLessThanOrEqual(.5);
+	}
+	// Validate input/capture premises before the horizontal oracle.
+	for(const arm of arms){
+		for(const sample of arm.captures){
+			expect(sample.drift,"horizontal glyph placement "+show({scale:arm.scale,phase:sample.phase})).toBeLessThanOrEqual(.5);
+			expect(sample.verticalDrift,"retained painted vertical placement").toBeLessThanOrEqual(.5);
+		}
+		const settled=arm.captures.find((s:any)=>s.phase==="settle-29");
+		for(const key of ["numberGlyph","textGlyph"]){const expected=key==="numberGlyph"?arm.expectedEndpoint.numberX:arm.expectedEndpoint.textX;
+			expect(Math.abs(settled.glyphs[key].x/arm.frozen.s-expected),"independent painted endpoint "+key).toBeLessThanOrEqual(.5);}
+	}
+},180_000);

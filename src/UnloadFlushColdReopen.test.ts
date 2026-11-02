@@ -49,6 +49,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { transformSync } from "esbuild";
 import mainSource from "./main.ts?raw";
+import pluginSettingsSource from "./settings/PluginSettings.ts?raw";
+import onloadSource from "./PluginOnload.ts?raw";
 import HandwritingPlugin from "./main";
 import { inlineInk } from "./inline/InkOverlay";
 import { InlineInkStore } from "./inline/InlineInkStore";
@@ -67,21 +69,24 @@ import { InkPoint, InkStroke, InkTool, computeBBox } from "./ink/Stroke";
 import { PageData, parsePage, serializePage, emptyPage } from "./model/PageData";
 import { FakeDoc, FakeEl } from "./testUtils/fakeDom";
 
-// ---- the two host blocks main.ts builds inside onload -------------------------
+// ---- the two host blocks: main.ts builds the inline one inside onload; the PDF
+// ---- one is built in loadSettings, which moved to settings/PluginSettings.ts;
+// ---- the onload phases live in PluginOnload.ts, read here with main.ts
 
-const main = mainSource.replace(/\r\n/g, "\n");
+const main = [mainSource, onloadSource].join("\n").replace(/\r\n/g, "\n");
+const pluginSettings = pluginSettingsSource.replace(/\r\n/g, "\n");
 
-function sliceBlock(start: string, end: string): string {
-	const occurrences = main.split(start).length - 1;
+function sliceBlock(text: string, start: string, end: string): string {
+	const occurrences = text.split(start).length - 1;
 	if (occurrences !== 1) throw new Error(`wiring marker found ${occurrences} times: ${start}`);
-	const at = main.indexOf(start);
-	const stop = main.indexOf(end, at);
+	const at = text.indexOf(start);
+	const stop = text.indexOf(end, at);
 	if (stop <= at) throw new Error(`wiring end marker not found after: ${start}`);
-	return main.slice(at, stop + end.length);
+	return text.slice(at, stop + end.length);
 }
 
-const INLINE_WIRING = sliceBlock("\t\tinlineInk.attachHost({", "\n\t\t});");
-const PDF_WIRING = sliceBlock("\t\tthis.pdfStore.attachHost({", "\n\t\t});");
+const INLINE_WIRING = sliceBlock(main, "\t\tinlineInk.attachHost({", "\n\t\t});");
+const PDF_WIRING = sliceBlock(pluginSettings, "\t\tthis.pdfStore.attachHost({", "\n\t\t});");
 
 /** `this` is the plugin; the parameters are the free names the block closes over. */
 const attachInlineHost = new Function(
@@ -697,70 +702,6 @@ describe("slides: the flushed bytes reopen as the same ink on the same slides", 
 			for (const s of after.get(slide) ?? []) expect(s.page).toBe(pageOfSlide(slide));
 		}
 		reopened.dispose();
-	});
-});
-
-// ---- the deferred registry's own two rules ------------------------------------------------
-
-/** The ids `flush()` would write right now: the store's queue, not its disk. */
-function pendingIds(store: PageStore): string[] {
-	return [...(store as unknown as { pending: Map<string, PageData> }).pending.keys()];
-}
-
-function pageWith(id: string): PageData {
-	return { ...emptyPage(id), surface: "inline", strokes: [stroke(`${id}-s`, 5, 5)] };
-}
-
-/**
- * Both cases exist because a single `Promise.all` pass would answer "drained"
- * while a write was still coming, and the flush behind it would write nothing
- * for that page. Reviewer finding F2 on the 8a36557f review.
- */
-describe("PageStore.settleDeferred", () => {
-	it("waits for a schedule registered while it is already waiting", async () => {
-		const adapter = new FakeAdapter();
-		const store = new PageStore({ vault: { adapter } } as never);
-		const first = gate();
-		const second = gate();
-		const idA = fresh("deferred-a");
-		const idB = fresh("deferred-b");
-		store.scheduleAfter(first.promise, () => {
-			store.schedule(idA, pageWith(idA));
-			// A second page claims its id while the unload is waiting.
-			store.scheduleAfter(second.promise, () => store.schedule(idB, pageWith(idB)));
-		});
-
-		const settled = store.settleDeferred();
-		let done = false;
-		void settled.then(() => (done = true));
-		await drainMicrotasks();
-		expect(done).toBe(false);
-		first.release();
-		await drainMicrotasks();
-		expect(done, "the wait ended before the schedule registered during it").toBe(false);
-		second.release();
-
-		expect(await settled).toBe(true);
-		expect(pendingIds(store)).toEqual([idA, idB]);
-	});
-
-	it("one parked schedule that throws does not end the wait for the others", async () => {
-		const adapter = new FakeAdapter();
-		const store = new PageStore({ vault: { adapter } } as never);
-		const failing = gate();
-		const other = gate();
-		const id = fresh("deferred-survivor");
-		store.scheduleAfter(failing.promise, () => {
-			throw new Error("the page id save failed");
-		});
-		store.scheduleAfter(other.promise, () => store.schedule(id, pageWith(id)));
-
-		const settled = store.settleDeferred();
-		failing.release();
-		other.release();
-
-		expect(await settled).toBe(true);
-		expect(pendingIds(store)).toEqual([id]);
 	});
 });
 

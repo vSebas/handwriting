@@ -45,15 +45,15 @@ declare const process: { env: Record<string, string | undefined> };
  *   HW_PAPER_PAN_PLANT_NO_PAN=1      the pan writer never hands the pan to the paper (every live reading goes red);
  *   HW_PAPER_PAN_PLANT_NO_WRAP=1     the pan properties are written unfolded (the fold assertions go red; the painted paper does not change, a repeating pattern wraps both ways);
  *   HW_PAPER_PAN_PLANT_NO_DRIFT=1    the paper never takes the column's re-centring (the zoom-in readable-width arms go red);
- *   HW_PAPER_PAN_PLANT_SNAP_TWICE=1  the snap's residual is applied a second time at rest (the off-grid lift jump goes red).
+ *   HW_PAPER_PAN_PLANT_SNAP_TWICE=1  the snap's residual is applied a second time at rest (the off-grid note's paper at rest goes red).
  * A plant whose anchor is not in the source throws rather than passing unplanted.
  */
 const PLANTS: { env: string; file: RegExp; from: string; to: string }[] = [
-	{ env: "HW_PAPER_PAN_PLANT_OLD_ORIGIN", file: /src[\\/]inline[\\/]InkOverlay\.ts$/, from: "return anchorTop(this.view, this.contentStyle?.paddingTop, this.cssScale) - this.panY();", to: "return this.view.documentTop - this.panY();" },
-	{ env: "HW_PAPER_PAN_PLANT_NO_PAN", file: /src[\\/]inline[\\/]InkOverlay\.ts$/, from: "\t\tthis.writePaperPan();\n\t\tthis.writeInkLayerTransform();\n", to: "\t\tthis.writeInkLayerTransform();\n" },
+	{ env: "HW_PAPER_PAN_PLANT_OLD_ORIGIN", file: /src[\\/]inline[\\/]InkOverlayPinch\.ts$/, from: "return anchorTop(this.view, this.contentStyle?.paddingTop, this.cssScale) - this.panY();", to: "return this.view.documentTop - this.panY();" },
+	{ env: "HW_PAPER_PAN_PLANT_NO_PAN", file: /src[\\/]inline[\\/]InkOverlayPaperPinch\.ts$/, from: "const x = (this.panX() + this.paperColumnDrift) * s - (carry?.x ?? 0), y = this.panY() * s + this.paperRewrapY - (carry?.y ?? 0);", to: "const x = this.paperColumnDrift * s - (carry?.x ?? 0), y = this.paperRewrapY - (carry?.y ?? 0);" },
 	{ env: "HW_PAPER_PAN_PLANT_NO_WRAP", file: /src[\\/]inline[\\/]PaperPan\.ts$/, from: "\tif (!Number.isFinite(pitch) || pitch <= 0) return Math.round(v * 64) / 64;", to: "\treturn Math.round(v * 64) / 64;" },
-	{ env: "HW_PAPER_PAN_PLANT_NO_DRIFT", file: /src[\\/]inline[\\/]InkOverlay\.ts$/, from: "const drift = columnLocal === null || a.columnLocal === null ? 0 : (columnLocal - a.columnLocal) * next;", to: "const drift = 0;" },
-	{ env: "HW_PAPER_PAN_PLANT_SNAP_TWICE", file: /src[\\/]inline[\\/]InkOverlay\.ts$/, from: "\t\tconst carry = this.pinchPreview ? this.paperSnapResidual : null;\n", to: "\t\tconst carry = this.pinchPreview ? this.paperSnapResidual : { x: -this.paperSnapResidual.x, y: -this.paperSnapResidual.y };\n" },
+	{ env: "HW_PAPER_PAN_PLANT_NO_DRIFT", file: /src[\\/]inline[\\/]InkOverlayPanSettle\.ts$/, from: "const drift = columnLocal === null || a.columnLocal === null ? 0 : (columnLocal - a.columnLocal + (nativeLeft - a.scrollLeft) * outer) * next;", to: "const drift = 0;" },
+	{ env: "HW_PAPER_PAN_PLANT_SNAP_TWICE", file: /src[\\/]inline[\\/]InkOverlayPaperPinch\.ts$/, from: "\t\tconst carry = this.pinchPreview ? this.paperSnapResidual : null;\n", to: "\t\tconst carry = this.pinchPreview ? this.paperSnapResidual : { x: -this.paperSnapResidual.x, y: -this.paperSnapResidual.y };\n" },
 ];
 
 beforeAll(async () => {
@@ -64,7 +64,7 @@ beforeAll(async () => {
 		bundle: true, write: false, format: "iife", platform: "browser",
 		alias: { obsidian: fileURLToPath(new URL("./iphoneObsidianStub.ts", import.meta.url)) },
 		plugins: active.length ? [{ name: "paper-pan-plants", setup(builder) {
-			builder.onLoad({ filter: /src[\\/]inline[\\/](InkOverlay|PaperPan)\.ts$/ }, args => {
+			builder.onLoad({ filter: /src[\\/]inline[\\/](InkOverlay|InkOverlayPaperPinch|InkOverlayPanSettle|InkOverlayPinch|PaperPan)\.ts$/ }, args => {
 				let text = readFileSync(args.path, "utf8").replace(/\r\n/g, "\n");
 				for (const pl of active.filter(x => x.file.test(args.path))) {
 					if (text.split(pl.from).length !== 2) throw new Error(`${pl.env}: anchor not found once`);
@@ -647,7 +647,7 @@ async function stagedRelease(p: Page) {
 		const st = (window as any).__staged, half = st.half0 * st.ratio;
 		st.send("pointerup", 701, st.cx - half, st.cy);
 		st.send("pointerup", 702, st.cx + half, st.cy);
-		await (window as any).viewportFixture.rest(); // s189: the reading after a release is the page at rest; the patch reader pairs a screenshot with a later rect, which a playing ease skews
+		await (window as any).viewportFixture.rest(); // The reading after a release is the page at rest; the patch reader pairs a screenshot with a later rect, which a playing ease skews
 	});
 }
 
@@ -887,7 +887,7 @@ it("REGISTERED: a pan written on the scroller moves the painted rules by its val
  * own top-left corner cannot be reached with two fingers inside this editor; a pinch that returns to its scale about
  * one point is the same no-pan case.)
  *
- * KNOWN, DISCLOSED, NOT FIXED - `it.fails` under s88 add. 12, which PARKED the router fix
+ * KNOWN, DISCLOSED, NOT FIXED - `it.fails` under the ruling, which PARKED the router fix
  * post-1.4.20. The defect: InlinePenRouter emits the pinch "start" from inside the pointermove
  * that crosses the slop, and Chromium delivers one pointermove PER CONTACT for a single
  * two-finger sample, so that centroid is made of one contact's new position and the other's
@@ -1033,6 +1033,9 @@ it.each([[0, "on the device grid"], [10 / 64, "off the device grid"]] as const)(
 		console.log("PAPER-LIFT-JUMP", JSON.stringify({ margin, rest: { ...rest, offDev: offDev(rest) }, live: { ...live, offDev: offDev(live) }, settled: { ...settled, offDev: offDev(settled) }, jump }));
 		expect.soft(Math.abs(offDev(live)), `LIFT JUMP +${margin}: mid-gesture the paper lands on the whole device px nearest the text, device px`).toBeLessThanOrEqual(0.55);
 		expect.soft(Math.abs(jump), `LIFT JUMP +${margin}: the paper's move against the text at the settle, device px at 150 percent`).toBeLessThanOrEqual(margin === 0 ? 0.05 : 0.5);
+		// A doubled residual adds at most half a device px to the jump, which the bound above admits; at rest it puts the
+		// paper a whole residual past the device px nearest the text, which this reads.
+		expect.soft(Math.abs(offDev(settled)), `LIFT JUMP +${margin}: at rest the paper lands on the whole device px nearest the text, device px`).toBeLessThanOrEqual(0.55);
 	} finally {
 		await p.close();
 	}

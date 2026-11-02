@@ -1,7 +1,7 @@
 /**
  * The registered "Toolbar on / off" callback, run as main.ts registers it.
  *
- * s138 item 15 narrowed it: the command used to move BOTH bars, and now moves the toolbar alone. The zoom bar is
+ * The canvas work narrowed it: the command used to move BOTH bars, and now moves the toolbar alone. The zoom bar is
  * decided by its own settings row and by Infinite Canvas, so a command that also hid it took a decision away from
  * those two - and with the canvas off the zoom bar is not on screen for this command to restore.
  *
@@ -13,10 +13,12 @@
 import { describe, expect, it } from "vitest";
 import { transformSync } from "esbuild";
 import mainSource from "../main.ts?raw";
-import { getPenToolsMode, setPenToolsMode } from "./PenToolsMode";
+import commandsSource from "../commands/RegisterCommands.ts?raw";
+import { getPenToolsMode, penToolsVisible, setPenToolsMode } from "./PenToolsMode";
 import { getNoteZoomControlsMode, setNoteZoomControlsMode } from "./NoteZoomControlsMode";
 
-const source = mainSource.replace(/\r\n/g, "\n");
+// The command registrations live in commands/RegisterCommands.ts, read here with main.ts.
+const source = [mainSource, commandsSource].join("\n").replace(/\r\n/g, "\n");
 const START = '\t\tthis.addCommand({\n\t\t\tid: "toolbar-zoom-bar-toggle",';
 const END = "\n\t\t});";
 
@@ -45,6 +47,9 @@ function register() {
 	};
 	const deps: Record<string, unknown> = {
 		setPenToolsMode, setNoteZoomControlsMode,
+		// A pen has been seen, so Auto puts the strip on screen: these cells are about a visible toolbar.
+		// The command before any pen contact is src/__audit__/R5-main-1.test.ts.
+		penToolsVisible, penSeenThisSession: (): boolean => true, Platform: { isMobileApp: false },
 		refreshPenToolsAll: (): void => { refreshes++; },
 		runDetached: (_p: Promise<void>, what: string): void => { detached.push(what); },
 		routineNoticesVisible: (): boolean => true,

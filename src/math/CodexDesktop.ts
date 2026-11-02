@@ -1,4 +1,3 @@
-/// <reference types="node" />
 import { checkCodexNote, type CodexModelOption } from "./CodexService";
 import {
 	EXEC_TIMEOUT_MS, FIGURE_CONTEXT_MAX_CHARS, FIGURE_FEEDBACK_MAX_CHARS, FIGURE_SVG_MAX_CHARS,

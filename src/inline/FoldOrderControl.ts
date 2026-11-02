@@ -70,11 +70,12 @@
  * other line of it is the strip Alan will see over his note.
  */
 
-import { setIcon } from "obsidian";
+import { Platform, setIcon } from "obsidian";
 import { deviceHasTouch } from "./DeviceInput";
 import {
 	MobileTools,
 	NEVER_FOLDING_FACES,
+	nibInkColor,
 	normalizeFoldOrder,
 	stripBuildsButton,
 	stripButtonFace,
@@ -253,6 +254,10 @@ export function previewStripHost(reads: PreviewStripReads): MobileToolsHost {
 		// a Keyboard button exactly where the real strip has one.
 		penInksHere: () => true,
 		hasTouch: () => deviceHasTouch(),
+		// The same answer the real strip's host gives (InkOverlay.ts): on an
+		// iPhone the Keyboard button is built for finger ink, pen seen or not,
+		// so the preview must build it too or the setting lists one row short.
+		fingerInkAvailable: () => Platform.isIosApp && Platform.isPhone,
 	};
 }
 
@@ -348,7 +353,7 @@ export class FoldOrderControl {
 			// in": the answer is that they ARE coloured, in the colours they are
 			// actually holding, not tinted to look enabled.
 			if (face.inkTool !== undefined) {
-				btn.setCssStyles({ color: this.opts.previewHost.toolColor(face.inkTool) });
+				btn.setCssStyles({ color: nibInkColor(this.opts.previewHost.toolColor(face.inkTool)) });
 			}
 		}
 		// ---- the list ----------------------------------------------------
@@ -551,8 +556,23 @@ export class FoldOrderControl {
 	 * Write a new priority list, then re-read it. The only writer in the file.
 	 */
 	private commit(next: readonly string[]): void {
-		this.opts.apply(foldOrderFromPriority(next));
+		this.opts.apply(foldOrderFromPriority(this.withHiddenInPlace(next)));
 		this.syncFromSetting();
+	}
+
+	/**
+	 * The list the user just arranged, with every id this device has no row for
+	 * left in the slot it already holds. `normalizeFoldOrder` appends a missing
+	 * id at the end, so saving only the rows would push a hidden button (Keyboard
+	 * on a machine with no pen) to the last slot on any drag. The empty list is
+	 * the reset and stays empty: it means the default order.
+	 */
+	private withHiddenInPlace(next: readonly string[]): string[] {
+		if (next.length === 0) return [];
+		const queue = [...next];
+		return priorityFromFoldOrder(normalizeFoldOrder(this.opts.order())).map((id) =>
+			this.rows.has(id) ? (queue.shift() ?? id) : id
+		);
 	}
 
 	private reset(): void {

@@ -176,9 +176,94 @@ class BackupGateAdapter extends FakeAdapter {
 	}
 }
 
+describe("audit recovery B1-002", () => {
+	it.each([true, false])("backup covers B after an already-consumed write (fail: %s)", async (fail) => {
+		vi.useFakeTimers();
+		let release = () => {};
+		try {
+			const r = await rig({ lock: "none", host: true });
+			await r.store.flush();
+			const a = r.adapter.files.get(SIDECAR)!;
+			drawWithPen(r, stroke("audit-B", 70));
+			const before = clone(r.live());
+			expect(before.map((s) => s.id)).toEqual(["old", "audit-B"]);
+			expect(r.depth().done).toBeGreaterThan(0);
+			let entered!: () => void;
+			const entry = new Promise<void>((resolve) => { entered = resolve; });
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const write = r.adapter.write.bind(r.adapter);
+			const events: string[] = [];
+			let held = false;
+			let requeuedAtBackup: string[] = [];
+			r.adapter.write = async (path, bytes) => {
+				events.push(`enter ${path}`);
+				if (!held && path === `${SIDECAR}.tmp`) {
+					held = true;
+					expect(parsePage(bytes, ID).data.strokes.map((s) => s.id)).toContain("audit-B");
+					entered();
+					await gate;
+					if (fail) {
+						events.push(`fail ${path}`);
+						throw new Error("audit B1-002 normal tmp before mutation");
+					}
+				}
+				if (path.includes("/trash/")) {
+					requeuedAtBackup = (r.store as any).pending.get(ID)?.strokes.map((s: InkStroke) => s.id) ?? [];
+				}
+				await write(path, bytes);
+				events.push(`complete ${path}`);
+			};
+			const normal = r.store.flush();
+			await entry;
+			expect((r.store as any).pending.has(ID)).toBe(false);
+			expect(r.store.hasQueuedWrite(ID)).toBe(true);
+			expect(r.adapter.files.get(SIDECAR)).toBe(a);
+			expect(r.adapter.files.has(`${SIDECAR}.tmp`)).toBe(false);
+			// Observe the real private chain call; do not replace its implementation.
+			// This is the barrier AFTER preserve's early pending check, not a sleep.
+			const chain = vi.spyOn(r.store as any, "chain");
+			const deletion = r.deleteAll();
+			for (let i = 0; i < 50 && chain.mock.calls.length === 0; i++) await Promise.resolve();
+			expect(chain.mock.calls).toHaveLength(1);
+			expect(chain.mock.calls[0]![0]).toBe(ID);
+			expect((r.store as any).pending.has(ID)).toBe(false);
+			events.push("preserve joined page chain");
+			release();
+			await Promise.all([normal, deletion]);
+			const notice = signals.notices.find((n) => n.includes("A copy is kept in "));
+			const kept = notice?.match(/A copy is kept in (.+)\.$/)?.[1];
+			const backup = kept ? parsePage(r.adapter.files.get(kept)!, ID).data.strokes : [];
+			if (fail) {
+				expect(events.filter((e) => e.startsWith("fail "))).toEqual([`fail ${SIDECAR}.tmp`]);
+				expect(requeuedAtBackup).toContain("audit-B");
+			}
+			await r.store.flush(); // no original stroke/schedule replay
+			const coldStore = new PageStore({ vault: { adapter: r.adapter } } as any);
+			const coldPdf = new PdfInkStore();
+			coldPdf.attachHost({ load: (id) => coldStore.load(id), schedule: () => {}, notice: () => {} });
+			await coldPdf.ensureLoaded(ID);
+			const recoveryIds = r.recoverable().map((s) => s.id);
+			console.log("AUDIT-B1-002", JSON.stringify({ fail, events, requeuedAtBackup, kept, backupIds: backup.map((s) => s.id), liveIds: r.live().map((s) => s.id), coldIds: coldPdf.strokes(ID).map((s) => s.id), depth: r.depth(), recoveryIds }));
+			const protectedB = backup.some((s) => persisted(s) === persisted(before.find((s) => s.id === "audit-B")!));
+			const refusedWithB = !notice && r.live().some((s) => s.id === "audit-B") && r.depth().done > 0;
+			expect.soft(protectedB || refusedWithB, "backup holds B or wipe refuses with B/history intact").toBe(true);
+			expect.soft(recoveryIds, "B recoverable after writes resume without replay").toContain("audit-B");
+			if (!fail) {
+				expect(backup.map(persisted)).toEqual(before.map(persisted));
+				expect(coldPdf.strokes(ID)).toEqual([]);
+			}
+		} finally {
+			release();
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+});
+
 type Lock = "none" | "damaged" | "future";
 
 interface Rig {
+	drainFrame: () => void;
 	adapter: BackupGateAdapter;
 	store: PageStore;
 	pdf: PdfInkStore;
@@ -225,11 +310,30 @@ async function rig(options: { lock: Lock; host: boolean }): Promise<Rig> {
 	}
 
 	const plugin = Object.create(HandwritingPlugin.prototype) as any;
+	const frames = new Map<number, () => void>();
+	let frameId = 0;
+	const drainFrame = () => {
+		const pending = [...frames.keys()];
+		for (const id of pending) {
+			const fn = frames.get(id);
+			frames.delete(id);
+			fn?.();
+		}
+	};
 	const controller = Object.create(PdfInkController.prototype) as any;
 	Object.assign(controller, {
+		editFrame: null,
+		editPaint: null,
+		editTarget: null,
+		editDelta: { dx: 0, dy: 0 },
+		win: {
+			requestAnimationFrame: (fn: () => void) => { frames.set(++frameId, fn); return frameId; },
+			cancelAnimationFrame: (id: number) => { frames.delete(id); },
+		},
 		history: new PdfInkHistory(),
 		pageSize: new Map(),
 		rotated: new Set(),
+		warnedRotated: new Set(),
 		router: null,
 		resetGestureState() {},
 		refresh() {},
@@ -237,6 +341,7 @@ async function rig(options: { lock: Lock; host: boolean }): Promise<Rig> {
 		clearSelection() {},
 		syntheticSources: () => false,
 		documentId: () => ID,
+		allStrokes: () => pdf.strokes(ID),
 		persist: (pageId: string) => pdf.save(pageId),
 		// Host op wiring exactly as main binds it: real applyOp -> real store.
 		onOp: (op: any, how: string) => {
@@ -277,6 +382,7 @@ async function rig(options: { lock: Lock; host: boolean }): Promise<Rig> {
 	});
 
 	return {
+		drainFrame,
 		adapter,
 		store,
 		pdf,
@@ -663,6 +769,7 @@ describe("the deletions that should still happen, still happen", () => {
 		// Real lassoMove -> replaceAllLive through the source-defined host
 		// binding; selection and coordinates stand in for gesture setup.
 		r.controller.lassoMove({ pageNumber: 1 }, 1, {}, {});
+		r.drainFrame();
 		expect(r.controller.liveDirty).toBe(true);
 		r.controller.penUp();
 		await r.store.flush();
@@ -908,7 +1015,7 @@ describe("calibration: this harness can see a complete undo when one exists", ()
 });
 
 describe("explicitly NOT a proven user reproduction", () => {
-	it("records the unfinished-lasso ordering as an API-level lead only", async () => {
+	it("an unfinished lasso drag that no copy holds makes the wipe refuse", async () => {
 		// Calling the confirmed deletion BEFORE a gesture completes is
 		// reachable through the API, and the guards treat it like any other
 		// state. Whether ordinary input and the confirmation modal can produce
@@ -924,6 +1031,7 @@ describe("explicitly NOT a proven user reproduction", () => {
 			pagePoint: () => ({ x: 25, y: 10 }),
 		});
 		r.controller.lassoMove({ pageNumber: 1 }, 1, {}, {});
+		r.drainFrame();
 		expect(r.controller.liveDirty).toBe(true);
 
 		// No penUp: the gesture is still live and unsaved, so the drag exists
@@ -932,33 +1040,48 @@ describe("explicitly NOT a proven user reproduction", () => {
 		await r.deleteAll();
 		await r.store.flush();
 
-		// WHAT ACTUALLY HAPPENS, recorded rather than blessed. Nothing changes
-		// during the await, so both guards pass and the wipe proceeds - which
-		// is the guards behaving exactly as specified. The backup therefore
-		// holds the stroke at its PRE-DRAG position, and the un-saved drag is
-		// not in any copy.
+		// The copy holds the stroke at its PRE-DRAG position, which is not
+		// the ink on screen, so the wipe now refuses and leaves the live ink
+		// alone: nothing is missing from the copies plus the live ink.
 		const survived = [...r.recoverable(), ...clone(r.live())];
 		const missing = beforeClear.filter(
 			(s) => !survived.some((t) => persisted(t) === persisted(s))
 		);
-
-		// The stroke itself is in a recovery copy - its identity and its
-		// last SAVED state both survive.
-		expect(r.recoverable().some((s) => s.id === "old")).toBe(true);
-
-		// And this is the honest limit, asserted as the lead it is rather
-		// than as a safety claim. The un-committed live drag is absent from
-		// every copy. This slice does NOT repair that and does not pretend
-		// to: reaching a confirmed deletion before a gesture completes is an
-		// API-level ordering only, with no supported host-routing evidence
-		// that ordinary input and the confirmation modal can produce it. It
-		// is unchanged by this repair - the same outcome on the base commit -
-		// and it stays outside the proven user-facing fix, pending that
-		// evidence. Promoting it to an expected pass here would be inventing
-		// a reproduction.
+		expect(r.live().map((s) => s.id)).toEqual(["old"]);
 		expect(
 			missing.map((s) => s.id),
-			"recorded lead: the unsaved live drag is in no copy; reachability unproved"
-		).toEqual(["old"]);
+			"the copy did not hold the on-screen ink, so the wipe refused"
+		).toEqual([]);
+	});
+});
+
+describe("no backup file: a wipe the store could not copy is refused, as the note surface refuses it", () => {
+	it("the ink file is gone from disk while strokes are on screen: nothing is deleted and no copy is claimed", async () => {
+		const r = await rig({ lock: "none", host: true });
+		await r.store.flush();
+		// Sync removed the sidecar under the open pane; nothing is queued to write.
+		await r.adapter.remove(SIDECAR);
+		expect(r.store.hasQueuedWrite(ID)).toBe(false);
+		expect(r.pdf.canPersist(ID)).toBe(true);
+		const before = clone(r.live());
+		expect(before.map((s) => s.id)).toEqual(["old"]);
+
+		await r.deleteAll();
+
+		expect(r.live().map((s) => s.id), "the wipe went on with no copy of the ink").toEqual(["old"]);
+		expect(signals.notices.some((n) => n.startsWith("Handwriting: removed")), "the user was told ink was removed").toBe(false);
+		expect(signals.notices.length, "the refusal said nothing").toBeGreaterThan(0);
+		expect(r.files().filter(([p]) => p.includes("/trash/")), "a copy appeared from nowhere").toEqual([]);
+	});
+
+	it("the ink file is there: the wipe still copies it and goes on", async () => {
+		const r = await rig({ lock: "none", host: true });
+		await r.store.flush();
+		expect(await r.adapter.exists(SIDECAR)).toBe(true);
+
+		await r.deleteAll();
+
+		expect(r.live()).toEqual([]);
+		expect(signals.notices.some((n) => n.includes("A copy is kept in "))).toBe(true);
 	});
 });

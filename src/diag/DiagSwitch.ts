@@ -50,10 +50,23 @@ export function setDiagnosticsChangedListener(fn: (() => void) | null): void {
 	onChanged = fn;
 }
 
+/**
+ * Told when recording starts or stops, however it flipped, before the listener above. It starts and stops the
+ * instruments that run on their own while recording (the main-thread gap timer and the long-task observer in
+ * ScrollProbe), so with recording off none of them exists. Told the current state when set.
+ */
+let onRecording: ((on: boolean) => void) | null = null;
+
+export function setDiagnosticsRecordingHook(fn: ((on: boolean) => void) | null): void {
+	onRecording = fn;
+	fn?.(enabled);
+}
+
 export function setDiagnosticsEnabled(on: boolean): void {
 	if (enabled === on) return;
 	if (on) recordingEpoch++;
 	enabled = on;
+	onRecording?.(on);
 	onChanged?.();
 }
 
@@ -70,7 +83,23 @@ export function setDiagnosticsEnabled(on: boolean): void {
 export function endRecordingForReport(): boolean {
 	if (!enabled) return false;
 	enabled = false;
+	onRecording?.(false);
 	onChanged?.();
+	return true;
+}
+
+/**
+ * Ends the recording a report was opened from, and only that one. A report window can outlive its recording:
+ * an upload that finishes after a new recording began must not stop the new one. Returns false, doing
+ * nothing, when a newer recording has started since `epoch` was read.
+ */
+export function endRecordingIfCurrent(epoch: number): boolean {
+	if (epoch !== recordingEpoch) return false;
+	if (enabled) {
+		enabled = false;
+		onRecording?.(false);
+		onChanged?.();
+	}
 	return true;
 }
 

@@ -23,7 +23,9 @@ import {
 	embedInkDiagLine,
 	embedInkIsCollapsed,
 	embedInkKeepWaiting,
+	embedInkChanged,
 	embedInkPendingWaitCount,
+	embedInkRenamed,
 	embedInkResolveRoot,
 	embedInkRetryDelay,
 	embedInkSizeWatchCount,
@@ -696,6 +698,19 @@ describe("a painted root with no size is re-measured, not abandoned at 0x0", () 
 		expect(embedInkSizeWatchCount()).toBe(0);
 	});
 
+	it("a collapsed root that left the DOM is swept by a change notification of another note, with no paint", () => {
+		// The notification sweep is the one that runs when no paint does: a note's ink was saved, and no root shows it.
+		const gone = fakeSizedRoot();
+		attachWithInk(gone, [strokeWithBBox(0, 0, 285, 368)]);
+		expect(embedInkSizeWatchCount()).toBe(1);
+
+		gone.isConnected = false;
+		embedInkChanged("another-note.md");
+
+		expect(gone.resize[0]?.disconnected, "a ResizeObserver on a detached tree").toBe(true);
+		expect(embedInkSizeWatchCount()).toBe(0);
+	});
+
 	it("a root that has already left the DOM is never armed with a watch", () => {
 		// It measures 0x0 like a collapsed root, and it will never gain a size.
 		const root = fakeSizedRoot();
@@ -721,5 +736,29 @@ describe("a painted root with no size is re-measured, not abandoned at 0x0", () 
 		root.layOut(285, 24);
 		root.resize[0]?.fire();
 		expect(root.canvases).toHaveLength(1);
+	});
+});
+
+describe("attachEmbedInkOnceReady: a rename while the embed waits for its section", () => {
+	it("the late attach registers the root under the renamed note", () => {
+		const env = fakeEnv();
+		const root = fakeRoot(env.view);
+		const section = fakeSection(env.view, {});
+		const asked: string[] = [];
+		initEmbedInkRefresh((p) => {
+			asked.push(p);
+			return [];
+		});
+
+		attachEmbedInkOnceReady(asEl(section), null, "old.md", noStrokes);
+		env.advance(120);
+		embedInkRenamed("old.md", "new.md"); // the vault renamed the note while the embed waited
+		section.connectTo(parentWith(root));
+		env.mutation[0]?.fire();
+		expect(embedInkPendingWaitCount(), "premise: the wait ended with an attach").toBe(0);
+
+		asked.length = 0;
+		embedInkChanged("new.md");
+		expect(asked, "a change to the renamed note reaches the embed that waited").toEqual(["new.md"]);
 	});
 });

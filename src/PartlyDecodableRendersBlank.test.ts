@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InlineInkStore } from "./inline/InlineInkStore";
 import { PdfInkStore } from "./pdf/PdfInkStore";
 import { parsePage, type ParseResult } from "./model/PageData";
-import surfaceSrc from "./slides/SlidesInkSurface.ts?raw";
+import persistenceSrc from "./slides/SlidesPersistence.ts?raw";
 
 /**
  * A PARTLY DECODABLE SIDECAR RENDERS BLANK, AND 1.4.12 SHOWED THE REST.
@@ -55,7 +55,7 @@ import surfaceSrc from "./slides/SlidesInkSurface.ts?raw";
  * slides (`SlidesInkSurface.ts:2274`) all return before adopting. Every
  * surface in the plugin now refuses. The canvas page view was the one that
  * did NOT - it set `spatialDamaged`, fell through, rendered the remnant and
- * went read-only - and it was deleted in s197, so the behaviour this file
+ * went read-only - and it was deleted, so the behaviour this file
  * argues for has no implementation left to point at. Slides is cited rather
  * than harnessed here: its load path needs a live deck, and the refusal is
  * the same two lines.
@@ -181,13 +181,13 @@ describe("a partly decodable sidecar renders blank where 1.4.12 rendered the res
  * already arms the correct lock and merely leaves before using it.
  */
 describe("slides refuses by returning, and its two locks differ only in that", () => {
-	/** A slice of the surface's own source, with both anchors asserted. */
+	/** A slice of the persistence file's own source, with both anchors asserted. */
 	function between(start: string, end: string): string {
-		const a = surfaceSrc.indexOf(start);
+		const a = persistenceSrc.indexOf(start);
 		expect(a, `anchor missing, this file is testing nothing: ${start}`).toBeGreaterThan(-1);
-		const b = surfaceSrc.indexOf(end, a + 1);
+		const b = persistenceSrc.indexOf(end, a + 1);
 		expect(b, `anchor missing, this file is testing nothing: ${end}`).toBeGreaterThan(a);
-		return surfaceSrc.slice(a, b);
+		return persistenceSrc.slice(a, b);
 	}
 
 	const DAMAGED = "if (result.damaged) {";
@@ -209,8 +209,8 @@ describe("slides refuses by returning, and its two locks differ only in that", (
 	});
 
 	it("and the adopt loop that fills the slide lists is downstream of both", () => {
-		const adopt = surfaceSrc.indexOf("this.strokes.set(index, list);");
+		const adopt = persistenceSrc.indexOf("this.strokes.set(index, list);");
 		expect(adopt, "the adopt loop moved; re-derive this file").toBeGreaterThan(-1);
-		expect(adopt).toBeGreaterThan(surfaceSrc.indexOf(FUTURE));
+		expect(adopt).toBeGreaterThan(persistenceSrc.indexOf(FUTURE));
 	});
 });

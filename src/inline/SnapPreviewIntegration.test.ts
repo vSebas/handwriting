@@ -26,7 +26,7 @@ function rig() {
   builder:null, frameTicking:false, scrollsDuringStroke:0, scale:1, cssWidth:800, cssHeight:600,
   container:{}, wet, penStyle:{...DEFAULT_PEN}, highlighterStyle:{...DEFAULT_PEN}, activeStyle:{...DEFAULT_PEN}, rawLastMoveT:0, rawLastMoveX:0, rawLastMoveY:0,
   strokeIndex:new StrokeIndex(), indexDirty:true, repaintQueued:false, activeWet:wet, highlightWet:wet,
-  highlightWetCanvas:{setCssStyles(){}}, tail:{clear(){},clearAll(){},drawHead(){}}, committedCtx:ctx,highlightCtx:ctx,
+  highlightWetCanvas:{setCssStyles(){}}, tail:{clear(){},clearAll(){},drawHead(){},configureInlineBacking(){},placeInline(){},restoreFullSurface(){},prepareLive(){}}, committedCtx:ctx,highlightCtx:ctx,
   damage:{addRect(){},addAll(){}},eraserEl:null,frame:{end(){},cancel(){},begin(){}},
  viewportPan:{x:0,y:0}, previewInkOffset:0,
  boundReadout:{floorX:0,floorY:0,bx:0,width:0,rawX:0,cx:0,rawY:0,cy:0,dragFrame:false,neverZoomed:false,steady:false,next:0,fromScale:0,fromScaleValid:false,restCeilX:0,startX:0,startY:0,lastX:0,lastY:0,bounded:false,settling:false},
@@ -65,10 +65,10 @@ it.each(["pointercancel","lostpointercapture",undefined])("%s ends freehand with
  expect(r.ops.map(op=>op.type)).toEqual(["add"]);
 });
 it("a delayed timer cannot fit a shape at lift",()=>{const r=rig();r.up();vi.advanceTimersByTime(500);expect(shown).toBeNull();expect(r.ops.map(op=>op.type)).toEqual(["add"]);});
-it("authoritative final release filtering can split the snapshot, preserving both freehand pieces",()=>{
+it("a pressure dip drawn after the preview keeps the freehand stroke whole and the ghost is not accepted",()=>{
  const r=rig();vi.advanceTimersByTime(350);expect(shown).not.toBeNull();
- r.builder.add(147,31,0.01,400);r.builder.add(155,31,0.01,415);r.builder.add(159,31,0.5,425);
- r.up();expect(r.ops.map(op=>op.type)).toEqual(["add"]);expect((r.ops[0] as any).strokes).toHaveLength(2);
+ r.raw(147,31,0.01,400);r.raw(155,31,0.01,415);r.raw(159,31,0.5,425);
+ r.up();expect(r.ops.map(op=>op.type)).toEqual(["add"]);expect((r.ops[0] as any).strokes).toHaveLength(1);
 });
 
 it.each(["pointermove","pointerrawupdate"])("unequivocal silent lift via %s accepts the shown candidate",type=>{

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import css from "../styles.css?raw";
 import main from "./main.ts?raw";
+import settingsModel from "./settings/SettingsModel.ts?raw";
+import pluginSettings from "./settings/PluginSettings.ts?raw";
+import tab from "./settings/HandwritingSettingTab.ts?raw";
 
 function rule(selector: string): string {
 	const start = css.indexOf(selector);
@@ -13,7 +16,7 @@ function rule(selector: string): string {
 /*
  * The first case here asserted the canvas page's own light paper and its typed
  * text colour, from `.handwriting-box` and `.handwriting-box.is-editing`. Both
- * rules were deleted with the view in s197, so the claim has no subject. The
+ * rules were deleted with the view, so the claim has no subject. The
  * BOUNDARY half - that the white sheet never reached the inline or PDF
  * surfaces - is the half that still has one, and it is the half that was worth
  * having: it is what a reader of the deleted rules could have broken.
@@ -34,14 +37,15 @@ describe("the light page stays inside the dedicated canvas boundary", () => {
 describe("the obsolete live-adaptation control is gone without migration", () => {
 	it("removes only the row and retains the compatibility key", () => {
 		expect(main).not.toContain('name: "Adapt ink colour to the theme"');
-		expect(main).toContain("inkAdaptsToTheme: boolean;");
-		expect(main).toContain("inkAdaptsToTheme: false,");
-		expect(main).toContain("inkAdaptsToTheme: raw?.inkAdaptsToTheme === true,");
-		expect(main).toContain('case "inkAdaptsToTheme":');
+		expect(tab).not.toContain('name: "Adapt ink colour to the theme"');
+		expect(settingsModel).toContain("inkAdaptsToTheme: boolean;");
+		expect(settingsModel).toContain("inkAdaptsToTheme: false,");
+		expect(pluginSettings).toContain("inkAdaptsToTheme: raw?.inkAdaptsToTheme === true,");
+		expect(tab).toContain('case "inkAdaptsToTheme":');
 	});
 
 	it("leaves both export controls present", () => {
-		expect(main).toContain('name: "Ink color when exporting"');
-		expect(main).toContain('name: "Ink color on PDFs"');
+		expect(tab).toContain('name: "Ink color when exporting"');
+		expect(tab).toContain('name: "Ink color on PDFs"');
 	});
 });

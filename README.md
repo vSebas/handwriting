@@ -2,19 +2,20 @@
 
 Handwrite, highlight, erase and lasso directly on your notes and PDFs. Your notes stay Markdown.
 
+![picking a pen color, writing, highlighting, then underlining on a note in Obsidian](docs/assets/write.gif)
+
 Open a note and write. The note stays a `.md` file.
 
 **This fork transcribes mixed handwriting with Codex.** Turn on **Transcribe
 handwriting with Codex** in Handwriting settings (off by default), then run
 **Transcribe all handwriting in this note** or **Lasso: transcribe
-handwriting** and review the resulting prose and LaTeX as editable Markdown. Existing note text and
-pasted images stay in place. You can insert beside matching note sections, at
-the captured cursor, or at the end, and optionally replace the corresponding
-pen ink. See [the workflow](docs/math.md) and [Codex CLI setup](services/codex/README.md).
-
+handwriting** and review the resulting prose and LaTeX as editable Markdown.
+Drawn figures are detected and can be kept, embedded as images, or redrawn by
+Codex after your review. Existing note text and pasted images stay in place.
+See [the workflow](docs/math.md) and [Codex CLI setup](services/codex/README.md).
 The community installation instructions below refer to the upstream plugin;
-install this fork's build to use recognition. For BRAT, add `vSebas/handwriting`
-and select the corresponding published release.
+install this fork's build to use transcription: in BRAT, add `vSebas/handwriting`
+and pick the latest release.
 
 ## removing the plugin
 
@@ -22,13 +23,15 @@ your ink is not stored "in" the markdown. it lives in a folder at your vault roo
 
 disable the plugin and your notes STAY EXACTLY THE SAME - the ink just stops rendering. re-enable and it comes back.
 
+![turning the plugin off and back on: the ink fades out, every word stays where it was, then the ink comes back](docs/assets/plugin-off.gif)
+
 one line is written to the invisible frontmatter of a note when you first write on it - `handwriting-page-id`.
 
 a note you never inked on is never modified.
 
 ## what it does
 
-Here's a demonstration of some of the features: https://youtu.be/TUeniA9BZcc
+Here's a demonstration of some of the features: https://youtu.be/uWcOWixkxEk
 
 ### right now you can
 
@@ -44,17 +47,18 @@ Here's a demonstration of some of the features: https://youtu.be/TUeniA9BZcc
 
 * data yours forever
    * your ink is all stored here: your vault's `.handwriting/` folder
-   * [what that folder looks like](https://imgur.com/a/60GBWnn)
+   * [what that folder looks like](#where-is-ink-stored)
 * pressure sensitivity
 * palm rejection
 * pen toolbar with auto-hide
-* pinch to zoom
+* pinch to zoom (pdfs always; notes with **Infinite canvas** on)
 * ink prediction + smoothing
 * lined, grid, and dotted paper background
 * export ink as svg or pdf
 * true infinite canvas
 * ink works in embeds
 * handwriting to shape snap
+* works on slides
 
 ### works on
 
@@ -66,8 +70,8 @@ iphone
 
 ---
 
-> **ipad users**
->
+### ipad notes
+
 > turn off Scribble or ios will draw its own black ink over your strokes, and its scratch-out gesture may delete ink.
 >
 > **iPad Settings → Apple Pencil → Scribble → Off**
@@ -92,92 +96,154 @@ can also just get it here:
 
 https://community.obsidian.md/plugins/handwriting
 
-### method 3 - BRAT, for beta builds
-
-if you want beta builds before they're released, use BRAT:
-
-open your Obsidian vault > Settings > community plugins in left side bar
-
-turn ON community plugins > browse
-
-search for BRAT > hit install and enable > click Settings >
-
-Scroll down till you see this and hit the plus in upper right hand
-
-<img width="464" height="167" alt="the BRAT settings panel, with the add-plugin button in the upper right" src="https://github.com/user-attachments/assets/049f790d-7e7f-452b-94ae-36d50f06b6ae" />
-
-paste this in : vSebas/handwriting > hit add plugin (the screenshots on this
-page come from the upstream plugin's settings; the steps are the same)
-
-### required
-
-Obsidian 1.12.3 or newer. please send reports.
-
 ## using it
 
-### the toolbar
+### settings
 
-tap a tool in the toolbar to use it: pen, highlighter, eraser, lasso, insert space or pan. pan lets you drag the page with the pen tip. on a narrow pane, some buttons may move behind **More**.
+**most of Handwriting's options live in Settings > Handwriting.** 
 
-tap the pen, highlighter or eraser again while it is selected to open its controls. press `Esc` or tap outside the popover to close it.
+### toolbar
 
-the keyboard button disables pen input so a tap can place the caret and open the on-screen keyboard. `Pen on / off` does the same from the command palette.
+the toolbar sits top right by default. you can drag and drop the toolbar. you can also collapse it by tapping the arrow. there are nine spots to choose from. location and visibility can also be changed in Handwriting settings.
 
-this also applies to pdfs. with the pen disabled, taps pass through to the pdf viewer.
+![the Handwriting toolbar](docs/assets/toolbar.png)
+
+![dragging the collapsed toolbar around the nine spots, then tapping it open](docs/assets/toolbar-spots.gif)
+
+### escape
+
+`Esc` closes most controls, then drops you back to the text in most cases.
+
+### tools
+
+tap a tool and use it: pen, highlighter, eraser, lasso, insert space, or pan. tap More if buttons are hidden.
+
+tap the pen, highlighter, or eraser again while it is selected to open its controls.
+
+![the pen's controls: size slider and colors](docs/assets/pen-menu.png)
+
+### keyboard button
+
+the keyboard button disables pen input so a tap can place the caret and open the on-screen keyboard. this may be useful for viewing pdfs. tap it again to get the pen back. `Handwriting: Pen on / off` does the same from the command palette.
+
+![keyboard button on, selecting text in a pdf](docs/assets/keyboard.png)
+
+### pen side button
+
+you can change what the side button does. this is useful for android and S pen users but others might find it useful. android users will get a "click while hovering to toggle eraser" function while everybody else get "hold to erase OneNote style" when changing this setting. this is due to a quirk in android
+
+### paper and infinite canvas
+
+you can turn infinite canvas or paper backgrounds on/off individually per-note with the buttons in the top right:
+
+![the paper and infinite canvas buttons at the top right of a note](docs/assets/note-buttons.png)
+
+you can also change it via the three dot menu in the top right. But the buttons are easier. there is no difference between the two ways, frontend speaking
+
+you may also find the global option in the Handwriting settings menu. `Handwriting: Paper: none / lines / grid / dots` in the command palette cycles through the paper backgrounds.
+
+![the paper background picker: global, none, lines, grid, dots](docs/assets/paper.png)
+
+with infinite canvas on you can zoom out and keep writing past the edge of the note. `Fit` zooms so all of your ink fits on screen.
+
+![infinite canvas: zooming out, drawing off to the side, then Fit](docs/assets/canvas.gif)
 
 ### mouse input
 
-to use the toolbar with a mouse, run `Handwriting: Mouse on / off`.
-
-click a tool to use it with the mouse. click the active tool again to return to the normal cursor.
-
-### eraser modes
-
-the eraser has two modes:
-
-- **stroke** erases the entire stroke
-- **reticle** erases only the part beneath the reticle
-
-tap the eraser button to select a mode. stroke is the default.
-
-the eraser button also toggles the eraser on and off. with **Extra commands for hotkeys** enabled, `Toggle eraser on / off` and `Eraser size: next` are available in the command palette.
-
-### colors and favorites
-
-tap the pen button to open its size slider, favorites and 8 pen colors. tap the highlighter button to open its size slider, also with favorites and 5 highlighter colors.
-
-selecting a color applies it to the corresponding nib.
+to write with your mouse, run `Handwriting: Mouse on / off`.
 
 ### extra commands for hotkeys
 
-enable **Extra commands for hotkeys** in settings to add these commands to the command palette:
+enable Extra commands for hotkeys in Handwriting settings (near bottom of page) to add these commands to the command palette:
 
-- `Ink color: next`
-- `Pen color: next`
-- `Highlighter color: next`
-- `Ink size: next`
-- toggles for eraser, lasso, insert space and pan
-- `Pen preset 1` through `4`
-- `Highlighter preset 1` through `4`
-- a save command for each preset slot
+* `Handwriting: Ink color: next`
+* `Handwriting: Pen color: next`
+* `Handwriting: Highlighter color: next`
+* `Handwriting: Ink size: next`
+* toggles for eraser, lasso, insert space and pan
+* `Handwriting: Pen preset 1` through `4`
+* `Handwriting: Highlighter preset 1` through `4`
+* a save command for each preset slot
 
-each command can be assigned its own hotkey.
+this is useful because each command can be assigned its own hotkey. for power users.
 
-the commands are hidden by default because their number makes other Handwriting commands harder to find. disabling the setting removes them from the palette but preserves their hotkey assignments.
+the commands are hidden by default because their sheer number makes other Handwriting commands harder to find. disabling the setting removes them from the palette but will preserve hotkey assignments.
 
 ### shape snap
 
 hold the pen still for about a third of a second at the end of a stroke to snap it into a line, triangle, rectangle, circle or ellipse.
 
-with a mouse, pause at the end of a stroke and select **Snap**.
+![drawing a ramp, holding still, and it snaps into a triangle](docs/assets/snap.gif)
+
+with a mouse, pause at the end of a stroke and select Snap.
+
+![the Snap button that shows up after a mouse stroke](docs/assets/snap-mouse.png)
+
+### lasso and snip
+
+you can lasso ink to move or copy and paste it anywhere in the note, or across different notes. You can also use `Handwriting: Snip the selection to an image` to save what you lassoed as a png next to the file and copy a link to it to your clipboard, so you can paste it into a note.
+
+![lassoing two rings and dragging them somewhere else](docs/assets/lasso.gif)
+
+![a snip pasted into another note, with a link back to the pdf page](docs/assets/snip.png)
+
+### insert space
+
+tap insert space, press on a line and drag down. everything below the line follows your pen, so you get room to write.
+
+![insert space: dragging down from a line to make room, then drawing in it](docs/assets/insert-space.gif)
+
+### boox and e-ink users
+
+if you're having latency issues on a Boox device, try turning on Boox mode in Handwriting's settings near the bottom of the menu. it might help a little.
+
+every redraw costs on e-ink, so it turns off smoothing, the pen reticle and animations, and sizes prediction for e-ink delay. your old settings come back when you turn it off.
+
+### pdfs and exporting
+
+you can annotate pdfs. same toolbar. same tools
+
+![a pdf page with a pink highlight and blue pen ink on it](docs/assets/pdf.png)
+
+* `Handwriting: Export ink as SVG (drawing only)` and `Handwriting: Export ink as PDF (drawing only)` export the drawing by itself, cropped to the ink, with no background
+* `Handwriting: Flatten ink into a copy of this PDF` draws the ink into a copy of the pdf so anyone can open it
+
+![the flattened copy open in a different pdf app, ink and all](docs/assets/pdf-flattened.png)
+
+you can also use the native Obsidian Export to PDF command. the page is shrunk to fit the paper export, so your ink should stay on its words. warning: text can come out a little smaller than a plain export.
+
+![a note exported with Export to PDF, ink on its words](docs/assets/export-pdf.png)
+
+### ink works on slides too
+
+`Handwriting: Toggle slides ink` turns it on while you present.
+
+![ink on a slide while presenting](docs/assets/slides.png)
+
+* `Handwriting: Presentation: undo ink` and `Presentation: redo ink`
+* `Handwriting: Clear ink on this slide`
+* `Handwriting: Clear all presentation ink`
+
+### ink color
+
+two settings in Settings > Handwriting decide how ink looks against the background.
+
+* **Ink color on PDFs** darkens or lightens your ink, or leaves it alone. default is darken.
+* **Ink color when exporting** keeps pen ink readable in exports, prints and snips. default is automatic.
+
+### resetting a note
+
+`Handwriting: Delete all ink on this note` and `Handwriting: Delete all ink on this PDF` are in the command palette. running these commands will still save a copy of your ink and also you can undo the action with ctrl+z
 
 ---
 
-> **sync notes**
->
+### obsidian sync notes
+
 > `.handwriting/` is a hidden folder. many sync services do not sync hidden folders by default, including Obsidian Sync, iCloud and Dropbox.
 >
 > if you use one of these services, enable **Compatibility with Obsidian Sync, iCloud and Dropbox** in Handwriting settings.
+>
+> Obsidian Sync also needs **Sync all other types** turned on (Settings, Sync, selective sync). ink is saved as `.json` files, and Obsidian Sync skips those by default.
 
 ---
 
@@ -193,9 +259,13 @@ your ink is one json file per note in /.handwriting/
 
 (your vault)/.handwriting/
 
+![the .handwriting folder: one json file per note](docs/assets/ink-folder.png)
+
 sidecar is a digital photography term that refers to a small file besides a main file, that holds information about the main file. this is a useful analogy
 
 in this case, the sidecar stores your ink as coordinates - your note is linked to your ink by a single properties line in the properties field of your note. this link + the coordinates tells Obsidian where all the ink is
+
+![source view of a note: the handwriting-page-id line in the frontmatter](docs/assets/page-id.png)
 
 what this means practically is that no matter what happens to the ink, the text in your note will be safe, as the note itself is not modified (besides its frontmatter).
 
@@ -229,19 +299,19 @@ if you have any questions i will try to answer as best i can
 
 ## reporting problems
 
-[open an issue](https://github.com/ellimist-afk/handwriting/issues/new/choose) on the upstream tracker for base plugin problems. for anything about this fork's Codex transcription, [open an issue on the fork](https://github.com/vSebas/handwriting/issues) instead. report what happened. remember to include which device and pen please.
+[open an issue](https://github.com/ellimist-afk/handwriting/issues/new/choose) on the upstream tracker for base plugin problems; for anything about this fork's Codex transcription, [open an issue on the fork](https://github.com/vSebas/handwriting/issues) instead. report what happened. remember to include which device and pen please.
 
-EZMODE reporting:
+EZ-MODE reporting:
 
-run `Bug report: record`.
+run `Handwriting: Bug report: record`.
 
 reproduce the bug.
 
-run `Bug report: send`.
+run `Handwriting: Bug report: send`.
 
-press `Upload` and the report comes straight to me 🙂 paste the id it gives you into your issue or the reddit thread so I know where it came from.
+press `Upload` on that window and the report comes straight to me 🙂 paste the id it gives you into your issue or the reddit thread so I know where it came from.
 
-for those of you nervous about sending bug reports: specifically what the report sends are pen coordinates and timings- nothing else. 
+for those of you nervous about sending bug reports: the report holds pen strokes (coordinates and timings) and a few other non-identifying info like cursor offset and the scroll position. it never holds your note's text. 
 
 and i guarantee nothing will leave your device unless you press `Upload` button. still uncomfortable with telemetry? `Copy` and `Save to Vault` buttons are offline ways to do bug reports
 
@@ -251,10 +321,10 @@ and i guarantee nothing will leave your device unless you press `Upload` button.
 * ruler + compass on screen
 * laser pointer
 * ocr / handwriting to text: available in this fork; see [setup](docs/math.md)
-* handwriting to math/latex: available in this fork; see [setup](docs/math.md)
 * searchable handwriting ( very soon )
-* text boxes ;)
-* canvas mode
+* handwriting to math/latex: available in this fork; see [setup](docs/math.md)
+* text boxes (soon)
+* compatibility with Obsidian's canvas mode
 * more custom colors
 
 ## money
@@ -268,18 +338,8 @@ thank you for using my plugin.
 
 CC BY-NC-ND 4.0
 
-disclaimer: ai assistance was used in this project.
-
 ## why i built this
 
-back in uni i remember taking biochem notes on a Surface Pro 4 with stars in my eyes. drawing structures and typing labels on the same OneNote page felt like literal magic. ten years later, now for work, I'm still using onenote - and i consider it a prison. 
-
-things change.
- 
-Obsidian has almost reached feature-parity for me but there's one last integration that keeps me falling back into the hands of Microsoft.
-
-**Handwriting is OneNote's last bastion.**
-
-not to wax poetic but i am beyond ready to break out.
+back in uni i remember taking biochem notes on a Surface Pro 4. drawing structures and typing labels on the same OneNote page felt like literal magic. it has been more than 10 years since those halcyon days. i'm driven to try and recreate that same magic again, but in Obsidian. i hope you find my plugin useful.
 
 Handwriting is designed for students, educators, engineers, artists, or anyone who needs to handwrite and type in Obsidian.

@@ -34,7 +34,10 @@ const OBSIDIAN_CAMERA_CSS = readFileSync(fileURLToPath(new URL("./noteViewportCa
 
 declare const process: { env: Record<string, string | undefined> };
 
-/** HW_PAPER_PAN_PLANT_UNCONDITIONAL=1: the paper pan writer writes on every call, changed or not (ZERO WRITES goes red). */
+/**
+ * HW_PAPER_PAN_PLANT_UNCONDITIONAL=1: the paper pan writer writes on every call, changed or not (AT REST, UNCHANGED goes
+ * red). Not ZERO WRITES: on a preview frame the writer hands the pan to the preview paper before the guard is reached.
+ */
 const UNCONDITIONAL = { from: "\t\tif (last ? last.x === ax && last.y === ay : !ax && !ay) return;\n", to: "" };
 
 beforeAll(async () => {
@@ -44,7 +47,7 @@ beforeAll(async () => {
 		bundle: true, write: false, format: "iife", platform: "browser",
 		alias: { obsidian: fileURLToPath(new URL("./iphoneObsidianStub.ts", import.meta.url)) },
 		plugins: process.env.HW_PAPER_PAN_PLANT_UNCONDITIONAL ? [{ name: "paper-pan-unconditional", setup(builder) {
-			builder.onLoad({ filter: /src[\\/]inline[\\/]InkOverlay\.ts$/ }, args => {
+			builder.onLoad({ filter: /src[\\/]inline[\\/]InkOverlayPaperPinch\.ts$/ }, args => {
 				const text = readFileSync(args.path, "utf8").replace(/\r\n/g, "\n");
 				if (text.split(UNCONDITIONAL.from).length !== 2) throw new Error("unconditional plant: anchor not found once");
 				planted++;
@@ -231,7 +234,7 @@ it("SPACING: the rules' screen pitch is 28 x z at 100, 50 and 25 percent, anchor
  * Self-contained (page.evaluate serialises the callback - no outer closure).
  */
 async function pinchWriteProbe(p: Page, id: string, ratios: number[], plant: "none" | "preview" | "commit"): Promise<{ previewWrites: number; commitPitchPhase: number; commitPhase: number; phaseAfter: number; commitThickness: number; finalZoom: number; elementWriteFrames: number; elementWritesMax: number; panWriteFrames: number; panCallsMax: number; panWritesUnchanged: number }> {
-	// s189: the probe counts writes on ITS pinch. A lift eases for up to 500 ms under the canvas, and a pinch begun inside that
+	// The probe counts writes on ITS pinch. A lift eases for up to 500 ms under the canvas, and a pinch begun inside that
 	// window cancels the ease, which is one pan write at the gesture's start and not a per-frame cost. Start from rest.
 	await p.evaluate(() => (window as any).viewportFixture.rest());
 	return p.evaluate(({ id, ratios, plant }) => {
@@ -358,6 +361,45 @@ it("ZERO WRITES: a pinch writes no paper property on any preview frame, and its 
 			const planted = await pinchWriteProbe(p, "paper", geometricRatios(0.85 / 0.9), plant);
 			expect(plant === "preview" ? planted.previewWrites : planted.commitPitchPhase, `positive control: the planted ${plant} write was not counted (finalZoom=${planted.finalZoom})`).toBe(1);
 		}
+	} finally {
+		await p.close();
+	}
+});
+
+/**
+ * AT REST, UNCHANGED: once a pinch has settled and the preview paper is down, the scroller carries the paper again, and
+ * the paper pan writer called with the pan where it already stands writes neither of the scroller's two pan properties.
+ * Two calls in a row; the second is the one counted, so the first may settle whatever the gesture left.
+ */
+it("AT REST, UNCHANGED: after a settle, a paper pan write with the pan unchanged writes no scroller pan property", async () => {
+	const p = await browser.newPage();
+	try {
+		await mountPaper(p);
+		await p.evaluate(() => (window as any).edgeAudit.commit("paper", 0.9));
+		await pinchWriteProbe(p, "paper", geometricRatios(0.85 / 0.9), "none");
+		await p.evaluate(() => (window as any).viewportFixture.rest());
+		const r = await p.evaluate(() => {
+			const overlay = (window as any).viewportFixture.overlay("paper");
+			const sst = (document.querySelector(".cm-scroller") as HTMLElement).style;
+			let calls = 0;
+			const realSet = sst.setProperty.bind(sst), realRemove = sst.removeProperty.bind(sst);
+			(sst as any).setProperty = (name: string, value: string, priority?: string) => { if (name.startsWith("--handwriting-paper-pan-")) calls++; return realSet(name, value, priority ?? ""); };
+			(sst as any).removeProperty = (name: string) => { if (name.startsWith("--handwriting-paper-pan-")) calls++; return realRemove(name); };
+			try {
+				const preview = !!overlay.pinchPreview || !!overlay.previewPaperEl;
+				overlay.writePaperPan();
+				const first = calls;
+				calls = 0;
+				overlay.writePaperPan();
+				return { preview, first, second: calls, zoom: (window as any).viewportFixture.snap("paper").state.zoom as number };
+			} finally {
+				(sst as any).setProperty = realSet; (sst as any).removeProperty = realRemove;
+			}
+		});
+		// eslint-disable-next-line no-console
+		console.log("PAPER-PAN-AT-REST " + JSON.stringify(r));
+		expect(r.preview, "premise: the settle has ended the preview, so the scroller carries the paper").toBe(false);
+		expect(r.second, "the second write, the pan unchanged since the first, writes no scroller pan property").toBe(0);
 	} finally {
 		await p.close();
 	}
@@ -807,6 +849,13 @@ it("AT REST: the rules are anchored to the note origin at 100 percent when fresh
 		const c = await read("after switching notes");
 		expect(c.geo.taken, "C premise: switching notes released the viewport").toBe(false);
 		expect.soft(c.off, `C after the view switched notes: rule end ${c.end} vs note origin ${c.expected}; ${JSON.stringify(c)}`).toBeLessThanOrEqual(0.5);
+
+		// D, the return arm (issue 9): back to the first note, which Reset left at 100 percent, so it
+		// returns at 100 percent with its rules on its origin. C above is the first-open arm: a note never seen this session.
+		await p.evaluate(() => (window as any).viewportFixture.switchPath("paper", "fit-paper.md"));
+		const d = await read("after switching back");
+		expect(d.geo.zoom, "D premise: the note returned at the 100 percent it was left at").toBeCloseTo(1, 6);
+		expect.soft(d.off, `D after switching back: rule end ${d.end} vs note origin ${d.expected}; ${JSON.stringify(d)}`).toBeLessThanOrEqual(0.5);
 	} finally {
 		await p.close();
 	}
@@ -864,6 +913,15 @@ it("AFTER A RELEASE: the first frame after a note switch paints the paper at the
 			expect.soft(frames[at].pitch, `${at}: pitch in the switched note's first frame; ${report}`).toBe("42px");
 			expect.soft(frames[at].rule, `${at}: rule in the switched note's first frame, at rest at 100 percent; ${report}`).toBe("1.5px");
 		}
+		// The return arm (issue 9): the switch above opened a note never seen this session, at 100
+		// percent. Switching back to the first note restores the 10 percent it was left at, and its paper with it.
+		const back = await p.evaluate(`(async () => {
+			await window.viewportFixture.switchPath("paper", "fit-paper.md");
+			for (let i = 0; i < 4; i++) await window.viewportFixture.settle();
+			return { zoom: window.viewportFixture.snap("paper").state.zoom, vars: (${readPaperVars})(document.querySelector(".cm-editor")) };
+		})()`) as { zoom: number; vars: PaperVars };
+		expect(back.zoom, `RETURN: the first note comes back at the 10 percent it was left at; ${JSON.stringify(back)}`).toBeCloseTo(0.1, 6);
+		expect.soft([back.vars.taken, back.vars.pitch, back.vars.rule], `RETURN: its paper at 24 px text, 10 percent; ${JSON.stringify(back)}`).toEqual([true, "42px", "10.15625px"]);
 	} finally {
 		await p.close();
 	}

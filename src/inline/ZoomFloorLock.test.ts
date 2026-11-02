@@ -57,10 +57,10 @@ function makeRig(start = 1) {
 	const scroller = { scrollLeft: 0, scrollTop: 0, scrollWidth: 64000, scrollHeight: 48000, getBoundingClientRect: () => ({ left: 0, top: 0, width: 640, height: 480 }) };
 
 	const overlay = Object.create(InkOverlayPlugin.prototype) as Fields;
-	overlay.view = { dom: host, scrollDOM: scroller, contentDOM: { getBoundingClientRect: () => ({ left: 0, top: 0 }), children: [] as unknown[] }, requestMeasure: vi.fn(), measure: vi.fn() };
+	overlay.view = { dom: host, scrollDOM: scroller, contentDOM: { getBoundingClientRect: () => ({ left: 0, top: 0 }), children: [] as unknown[] }, posAtCoords: () => null, requestMeasure: vi.fn(), measure: vi.fn() };
 	overlay.container = { setCssStyles: vi.fn() };
 	overlay.frame = { locked: false };
-	// s179: THIS RIG'S SUBJECT IS ZOOM MECHANICS, so its note is a CANVAS note. With the canvas off a
+	// THIS RIG'S SUBJECT IS ZOOM MECHANICS, so its note is a CANVAS note. With the canvas off a
 	// two-finger gesture is not a zoom at all (`pinch` returns on its first line), and a fixture left in
 	// that mode would run none of the code these arms are about while still reporting a result - measured,
 	// the mode gate alone turned several of them green by doing nothing. `canvasMode` is a class field and
@@ -194,13 +194,21 @@ describe("zoom-out is locked below the 10% floor", () => {
 		expect(rig.scale()).toBeGreaterThan(seven);
 	});
 
-	it("(a) the ease-back still lands when the lift comes before its frame: 7% -> 9% painted -> 8% pending settles 8%", () => {
-		// The painted preview wrote 9% as the live scale. The settle must be judged
-		// against the gesture's 7% start, not that preview.
+	it("(a) a lift before the ease-back's frame lands the painted frame: 7% -> 9% painted -> 8% unpainted settles 9%", () => {
+		// The painted preview wrote 9% as the live scale and the 8% move was never
+		// drawn, so the lift lands 9%. The floor is judged against the gesture's 7%
+		// start, and 9% is above it.
 		const rig = makeRig();
 		rig.fit(0.05);
 		rig.gesture(0.07);
-		expect(rig.gestureLiftPending(0.09, 0.08)).toBeCloseTo(0.08, 12);
+		expect(rig.gestureLiftPending(0.09, 0.08)).toBeCloseTo(0.09, 12);
+	});
+
+	it("(a) with no frame painted the lift still lands the move: 7% -> 8% unpainted settles 8%", () => {
+		const rig = makeRig();
+		rig.fit(0.05);
+		rig.gesture(0.07);
+		expect(rig.gestureLiftPending(0.08)).toBeCloseTo(0.08, 12);
 	});
 
 	it("(b) a re-commit at Fit's own scale succeeds (the resize and column paths)", () => {
@@ -266,7 +274,7 @@ describe("zoom-out is locked below the 10% floor", () => {
  * the constant symbolically, so it stays green whether the constant is 4 or
  * 6. Nothing there drives an actual preview frame, a real commit, or a
  * button click past the old ceiling - which is exactly what let two bare `4`
- * literals sit unnoticed the first time this same ceiling moved (Reviewer F1
+ * literals sit unnoticed the first time this same ceiling moved (a review finding
  * on 772960c7).
  */
 describe("the pinch-in ceiling reaches MAX_PINCH_SCALE, not the old 400%", () => {

@@ -6,15 +6,28 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { build } from "esbuild";
 import { chromium, type Browser, type Page } from "playwright";
+import { withoutLineAnchor } from "./storedInk";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 const root=fileURLToPath(new URL("../../",import.meta.url));
 let browser:Browser,bundle:string;
 const timingResults:unknown[]=[];
 declare const process: { env: Record<string, string | undefined> };
+// Z1 PLANTS, one per run (HW_Z1_PLANT), each anchor matched exactly once. correction0: the zoom lift's line correction
+// forced to 0. measure0: a contact inside a zoom lift's first measure no longer runs it, so the pen retires the lift's line correction. pandrop: the router maps the pen's y without the pan. pendrift: the pen's client point read without the raster camera's pan, so a held stroke lands off its line.
+const Z1_PLANTS:Record<string,[string,string,string]>={
+ correction0:["InkOverlayZoomApi","moved=this.view.lineBlockAt(fingerLine.pos).top/scaleY-fingerLine.top-(settleLineApplied.get(hold)??0);","moved=0;"],
+ measure0:["InkOverlayLifecycle","(this.view as unknown as { measure(): void }).measure(); this.router?.refreshRect();",""],
+ pandrop:["InlinePenRouter","y: visualToNote(e.clientY - this.rect.top - panY, scale),","y: visualToNote(e.clientY - this.rect.top, scale),"],
+ pendrift:["InkOverlayPenSupport","function inkPanY(this: InkOverlayPlugin): number { return this.panY() - (this.rasterPan?.y ?? 0) * this.cssScale; }","function inkPanY(this: InkOverlayPlugin): number { return this.panY(); }"],
+};
+const Z1_PLANT=process.env.HW_Z1_PLANT??"";
+if(Z1_PLANT&&!Z1_PLANTS[Z1_PLANT])throw Error(`unknown HW_Z1_PLANT ${Z1_PLANT}`);
+let z1PlantHits=0;
 beforeAll(async()=>{
  browser=await chromium.launch({headless:true});
- bundle=(await build({entryPoints:[root+"test/render/zoomWrittenInkPage.ts"],bundle:true,write:false,format:"iife",platform:"browser",alias:{obsidian:root+"test/render/iphoneObsidianStub.ts"},plugins:process.env.HW_COMPOSITE_ALPHA_PLANT?[{name:'opaque-highlighter-control',setup(builder){builder.onLoad({filter:/src[\\/]inline[\\/]InkOverlay\.ts$/},args=>{const contents=readFileSync(args.path,'utf8'),needle='ctx.globalAlpha = opacity;ctx.drawImage';if(!contents.includes(needle))throw Error('missing composite plant target');return {loader:'ts',contents:contents.replace(needle,'ctx.globalAlpha = 1;ctx.drawImage')};});}}]:[]})).outputFiles[0]!.text;
+ bundle=(await build({entryPoints:[root+"test/render/zoomWrittenInkPage.ts"],bundle:true,write:false,format:"iife",platform:"browser",alias:{obsidian:root+"test/render/iphoneObsidianStub.ts"},plugins:Z1_PLANT?[{name:'z1-plant',setup(builder){const [file,from,to]=Z1_PLANTS[Z1_PLANT]!;builder.onLoad({filter:new RegExp(`src[\\\\/]inline[\\\\/]${file}\\.ts$`)},args=>{const source=readFileSync(args.path,'utf8'),hits=source.split(from).length-1;if(hits!==1)throw Error(`z1 plant ${Z1_PLANT}: anchor matched ${hits} times, want 1`);z1PlantHits++;return {loader:'ts',contents:source.replace(from,to)};});}}]:process.env.HW_COMPOSITE_ALPHA_PLANT?[{name:'opaque-highlighter-control',setup(builder){builder.onLoad({filter:/src[\\/]inline[\\/]InkOverlay\.ts$/},args=>{const contents=readFileSync(args.path,'utf8'),needle='ctx.globalAlpha = opacity;ctx.drawImage';if(!contents.includes(needle))throw Error('missing composite plant target');return {loader:'ts',contents:contents.replace(needle,'ctx.globalAlpha = 1;ctx.drawImage')};});}}]:[]})).outputFiles[0]!.text;
+ if(Z1_PLANT&&z1PlantHits!==1)throw Error(`z1 plant ${Z1_PLANT}: the planted file was bundled ${z1PlantHits} times, want 1`);
 });
 afterAll(async()=>{if(process.env.HW_PINCH_TIMING)writeFileSync(process.env.HW_PINCH_TIMING,JSON.stringify(timingResults,null,2));await browser?.close();});
 async function mount(page:Page,count:number,focus=false,desktop=false,mixed:boolean|'overlap'=false){
@@ -65,8 +78,10 @@ for(const [zoom,scaled] of [[.1,false],[.4,false],[1,false],[.1,true],[.4,true]]
   await mount(page,250,false,false,'overlap');
   const state=(action:string)=>page.evaluate(a=>(window as any).zoomDrift.layerVisual(a.action,a.zoom),{action,zoom});
   const before=await state('setup');expect(before.pixels[0]).toBeGreaterThan(0);expect(before.pixels[2]).toBeGreaterThan(0);
+  expect(before.standInHeld,'setup: the zoom stand-in was still held 4 s after the zoom, so the baseline would be its pixels, not the sharp layer').toBe(false);
   let original=await page.screenshot();const preview=await state(scaled?'scaled-preview':'preview');expect(preview.composite).toBe(true);expect(preview.blank[3]).toBe(false);
   if(process.env.HW_COMPOSITE_THIN_PLANT)await state('thin-gap-plant');
+  if(process.env.HW_COMPOSITE_SHIFT_PLANT)await state(`shift-plant:${process.env.HW_COMPOSITE_SHIFT_PLANT}`);
   const combined=await page.screenshot();
   if(scaled){const restored=await state('restore');expect(restored.originalHashes).toEqual(before.originalHashes);expect(restored.pixels[3]).toBe(0);original=await page.screenshot();}
   await state('background');const background=await page.screenshot();const captured=await state('background-restore');
@@ -97,16 +112,42 @@ for(const [zoom,scaled] of [[.1,false],[.4,false],[1,false],[.1,true],[.4,true]]
   expect(diff.missing).toBe(0);expect(diff.missingDark).toBe(0);
   for(const arm of diff.thinArms){expect(arm.samples).toBeGreaterThan(20);expect(arm.originalPresent,`original ${arm.width}px arm`).toBe(arm.samples);expect(arm.combinedPresent,`preview ${arm.width}px arm`).toBe(arm.samples);}
   expect(Math.abs(diff.massRatio-1)).toBeLessThan(.02);expect(Math.abs(diff.darkMassRatio-1)).toBeLessThan(.02);
-  if(!scaled){expect(diff.max).toBeLessThanOrEqual(2);expect(diff.changed).toBe(0);const restored=await state('restore');expect(restored.originalHashes).toEqual(before.originalHashes);expect(restored.pixels[3]).toBe(0);expect((await page.screenshot()).equals(original)).toBe(true);}
+  // Fixed scale: the composite and the separate layers rasterize the same ink,
+  // but the two paths may round an edge pixel differently (the Linux CI runner
+  // read 3). Flat interiors stay at 2 (coreMax above); edges
+  // allow 4, on at most 0.5 percent of the ink pixels. A half-pixel shift of the
+  // preview (HW_COMPOSITE_SHIFT_PLANT=0.5) passes the checks above and reads over both here.
+  if(!scaled){const edge=`composite edge: max ${diff.max}, changed ${diff.changed}, roiPixels ${diff.roiPixels}`;expect(diff.max,edge).toBeLessThanOrEqual(4);expect(diff.changed,edge).toBeLessThanOrEqual(.005*diff.roiPixels);const restored=await state('restore');expect(restored.originalHashes).toEqual(before.originalHashes);expect(restored.pixels[3]).toBe(0);expect((await page.screenshot()).equals(original)).toBe(true);}
   if(scaled)return;
   for(const action of ['restore','tail','tail-clear','repaint','resize','wet-clear','wet','pen']){
-   await state('restore');const active=await state('preview');if(action==='tail-clear'){expect(active.composite).toBe(true);expect(active.pixels[4]).toBeGreaterThan(0);}
+   // The tail-clear arm paints its tail on the full surface: the composite takes a
+   // full-size occupied tail only (a compact one is refused; see the cell below).
+   await state('restore');if(action==='tail-clear'){await state('tail-full');await state('tail');}const active=await state('preview');if(action==='tail-clear'){expect(active.composite).toBe(true);expect(active.pixels[4]).toBeGreaterThan(0);}
    const after=await state(action);expect.soft(after.composite,action).toBe(false);expect.soft(after.visible.every((v:string)=>v==='visible'),action).toBe(true);
    if(action==='tail-clear'||action==='wet-clear'){expect.soft(after.pixels[3],action).toBe(0);expect.soft(after.blank[3],action).toBe(true);}
    if(action==='tail-clear')expect(after.pixels[4]).toBe(0);
-   if(action!=='pen')expect(after.strokes,action).toBe(before.strokes);
+   if(action!=='pen')expect(withoutLineAnchor(after.strokes),action).toBe(withoutLineAnchor(before.strokes));
    if(action==='wet'){expect(after.pixels[3]).toBeGreaterThan(0);expect(after.blank[3]).toBe(false);const fallback=await state('preview');expect(fallback.composite).toBe(false);expect(fallback.visible[3]).toBe('visible');await state('restore');const cleared=await state('wet-clear');expect(cleared.blank[3]).toBe(true);expect(cleared.pixels[3]).toBe(0);}
   }
+ }finally{await page.close();}
+});
+it('refuses the pinch composite over a compact occupied tail and keeps every inked layer visible',async()=>{
+ const page=await browser.newPage({viewport:{width:900,height:700},deviceScaleFactor:2});
+ try{
+  await mount(page,250,false,false,'overlap');
+  const state=(action:string)=>page.evaluate(a=>(window as any).zoomDrift.layerVisual(a.action,a.zoom),{action,zoom:1});
+  const before=await state('setup');expect(before.pixels[2]).toBeGreaterThan(0);
+  const drawn=await state('tail');expect(drawn.pixels[4],'tail occupied').toBeGreaterThan(0);
+  expect(drawn.tailBacking.w*drawn.tailBacking.h,'tail is compact').toBeLessThan(drawn.tailBacking.bandW*drawn.tailBacking.bandH);
+  const original=await page.screenshot();
+  const preview=await state('preview');
+  expect(preview.composite,'composite refused over a compact tail').toBe(false);
+  // Blank layers may hide for the preview, as they do on every pinch; no inked one may,
+  // and the occupied tail least of all.
+  for(let i=0;i<5;i++)if(preview.pixels[i]>0)expect(preview.visible[i],`inked canvas ${i} stays visible`).toBe('visible');
+  expect(preview.visible[4],'the occupied compact tail stays visible').toBe('visible');
+  expect((await page.screenshot()).equals(original),'the screen is unchanged').toBe(true);
+  await state('restore');
  }finally{await page.close();}
 });
 for(const mixed of [false,true])it(`uses one visible raster during repeated low-zoom pinches, mixed=${mixed}`,async()=>{
@@ -117,7 +158,11 @@ for(const mixed of [false,true])it(`uses one visible raster during repeated low-
    expect(r.liveDimensions.canvases.filter((c:any)=>c.visibility!=='hidden').length).toBe(1);
    expect(r.finalDimensions.canvases.every((c:any)=>c.visibility!=='hidden')).toBe(true);
    expect(r.before.strokes).toEqual(r.after.strokes);expect(r.before.saved).toBe(r.after.saved);
-   expect(r.backingWrites).toBe(0);expect(r.liveClears).toBe(0);expect(r.liveTransactions).toBe(0);
+   // The pre-pinch scroll released the wet canvas. A pen-only pinch then writes no backing; a mixed note's composite
+   // sizes the wet canvas once, at its start (width and height), and nothing else.
+   expect(r.wetReleasedBefore,'premise: the scroll before the pinch released the wet canvas').toBe(true);
+   expect(r.wetBackingWrites,'wet canvas backing writes in the live pinch').toBe(mixed?2:0);
+   expect(r.backingWrites-r.wetBackingWrites,'other backing writes in the live pinch').toBe(0);expect(r.liveClears).toBe(0);expect(r.liveTransactions).toBe(0);
   }
  }finally{await page.close();}
 });
@@ -203,7 +248,21 @@ for(const cancel of [false,true]){
   // paths is a frame apart, not a rounding apart: before the pen mapping was
   // corrected for the pan this same pair sat 842 note px from the contact.
   expect(results[0].stroke.points[0].x).toBeCloseTo(results[1].stroke.points[0].x,3);
-  expect(results[0].stroke.points[0].y).toBeCloseTo(results[1].stroke.points[0].y,3);
+  // Y AGAINST ITS LINE. The zoom lift holds the line under the fingers, so the two paths' settles can leave the lines
+  // at different page y (measured 4.27 note px apart); the pen must still land on the same line at the same height in it.
+  // The stroke's line anchor names that line and its top when the stroke was taken.
+  for(const r of results)expect(r.stroke.lineAnchor,"the held stroke carries no line anchor").toBeTruthy();
+  expect(results[0].stroke.lineAnchor.line,"the two paths put the pen on different lines").toBe(results[1].stroke.lineAnchor.line);
+  expect(results[0].stroke.points[0].y-results[0].stroke.lineAnchor.top).toBeCloseTo(results[1].stroke.points[0].y-results[1].stroke.lineAnchor.top,3);
+  // THE CONTACT'S OWN MEASURE: once on the down inside the lift's first measure (the unmeasured path), never on the
+  // down after it ran (the measured path), never on a plain down.
+  expect(results[0].measureCalls.held,"the contact inside the lift's first measure did not run it once").toBe(1);
+  expect(results[1].measureCalls.held,"a contact after the lift's measure ran a measure").toBe(0);
+  for(const r of results)expect(r.measureCalls.plain,"a plain pen down ran a measure").toBe(0);
+  // ABSOLUTE LEG: each path's first point against the note point the text's DOM gives for the contact, bar 0.1 screen
+  // px (note error times cssScale), as ScrollColumnAnchorPinch's mapping arm. The two-path compare above cannot see a
+  // drift both paths share.
+  for(const [i,r] of results.entries())expect(Math.hypot(r.stroke.points[0].x-r.expected.x,r.stroke.points[0].y-r.expected.y)*r.expected.cssScale,`path ${i?"measured":"unmeasured"}: first point off the text's note point`).toBeLessThan(.1);
  });
 }
 for(const changed of [false,true])for(const zoom of [.322,.1]){

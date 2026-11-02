@@ -40,15 +40,15 @@ const evidence: unknown[] = [];
 
 beforeAll(async () => {
 	const plants: [string, string, string, string][] = [];
-	if (process.env.HW_SIDEWAYS_PLANT_NO_FLOOR) plants.push(["no-floor", "InkOverlay", "floor = Math.max(floor, onScreenFloorX(view));", "floor = Math.max(floor, 0);"]);
-	if (process.env.HW_SIDEWAYS_PLANT_NO_RELEASE_GUARD) plants.push(["no-release-guard", "InkOverlay", "if (Math.max(scroller.clientWidth, spacerRight) < scroller.scrollLeft + scroller.clientWidth) return;", ""]);
-	if (process.env.HW_SIDEWAYS_PLANT_STEP_WHILE_SCROLLING) plants.push(["step-while-scrolling", "InkOverlay", "if (this.shrinkStepped.get(path) === due && !force) return granted;", ""]);
+	if (process.env.HW_SIDEWAYS_PLANT_NO_FLOOR) plants.push(["no-floor", "InkOverlayBand", "floor = Math.max(floor, onScreenFloorX(view));", "floor = Math.max(floor, 0);"]);
+	if (process.env.HW_SIDEWAYS_PLANT_NO_RELEASE_GUARD) plants.push(["no-release-guard", "InkOverlayBand", "if (Math.max(scroller.clientWidth, spacerRight) < scroller.scrollLeft + scroller.clientWidth) return;", ""]);
+	if (process.env.HW_SIDEWAYS_PLANT_STEP_WHILE_SCROLLING) plants.push(["step-while-scrolling", "InkOverlayBand", "if (this.shrinkStepped.get(path) === due && !force) return granted;", ""]);
 	if (process.env.HW_SIDEWAYS_PLANT_STRICT_EDGE) plants.push(["strict-edge", "SurfaceExtent", "return g.originLeft + g.frontierX * g.fontZoom > g.clientWidth - EXTENT_MARGIN * g.fontZoom ? g.frontierX : 0;", "return g.originLeft + g.frontierX * g.fontZoom > g.clientWidth ? g.frontierX : 0;"]);
 	const applied = new Set<string>();
 	const b = await build({ entryPoints: [fileURLToPath(new URL("./sidewaysScrollPage.ts", import.meta.url))], bundle: true, write: false, format: "iife", platform: "browser", target: "es2022",
 		alias: { obsidian: fileURLToPath(new URL("./iphoneObsidianStub.ts", import.meta.url)) },
 		plugins: plants.length ? [{ name: "sideways-plants", setup(builder) {
-			builder.onLoad({ filter: /src[\\/]inline[\\/](InkOverlay|SurfaceExtent)\.ts$/ }, args => {
+			builder.onLoad({ filter: /src[\\/]inline[\\/](InkOverlay|InkOverlayBand|SurfaceExtent)\.ts$/ }, args => {
 				let text = readFileSync(args.path, "utf8");
 				for (const [name, file, from, to] of plants) {
 					if (!args.path.replace(/\\/g, "/").endsWith(`/${file}.ts`)) continue;
@@ -175,15 +175,15 @@ function expectRoomReachesTheInk(placed: Placed, back: Placed, end: Placed) {
 }
 
 /**
- * RETIRED [s179 (2), applied by s187 add. 2, 2026-09-21]: "ZOOMED OUT: a stroke at the pane's right edge at
+ * RETIRED: "ZOOMED OUT: a stroke at the pane's right edge at
  * 50% gives the note sideways room back at 100%, reaching just past the ink".
  *
  * The cell reached its ink past the pane's right edge by zooming the note out to 50% with the Infinite Canvas
- * OFF, drawing at the visible edge, and zooming back. s179 took the note zoom out of canvas-off altogether, so
+ * OFF, drawing at the visible edge, and zooming back. The ruling took the note zoom out of canvas-off altogether, so
  * the rig's `overlay.pinch(...)` is refused and the readout comes back "zoom":1 where 0.5 was asked - the
  * premise fails because the route the cell describes is not in the product any more, not because anything
- * regressed. GREEN at the shipped base aa437ff1 and red from s179 onward (Reviewer, two independent reads:
- * the baseline gate log, and the file run in review-aa437ff1 - 18 passed there against 17 here with the cell
+ * regressed. GREEN at the shipped base aa437ff1 and red from the ruling onward (review, two independent reads:
+ * the baseline gate log, and the file run in the review at aa437ff1 - 18 passed there against 17 here with the cell
  * gone), which is the stronger case for retiring it: the route was taken out by a named change rather than
  * never having worked.
  *
@@ -191,7 +191,7 @@ function expectRoomReachesTheInk(placed: Placed, back: Placed, end: Placed) {
  * state by the other canvas-off route named in the comment above (a wide pane narrowed), and INFINITE CANVAS ON
  * below that covers the zoomed case where the zoom still exists. The canvas-off refusal itself is pinned in
  * ZoomFreezeTouch (scale stays 1, the text stays put, the bar reads busy, and the surface hands the pinch to
- * the host), which is the one pin s179 (2) asks each rig for.
+ * the host), which is the one pin the ruling asks each rig for.
  */
 it("PANE NARROWED: a stroke near the right edge of a wide pane gives the note sideways room once the pane is narrowed", async () => {
 	const snaps = (await scenario("narrowed-pane-edge-ink")) as Placed[];

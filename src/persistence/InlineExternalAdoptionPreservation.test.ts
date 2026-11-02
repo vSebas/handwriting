@@ -40,6 +40,9 @@ import { PageData, emptyPage, parsePage, serializePage } from "../model/PageData
 import { InkStroke } from "../ink/Stroke";
 import { installLiveReloadPoll } from "../testUtils/LiveReloadTestHarness";
 
+/** What a note says once its live ink file has stayed missing past the quiet period. */
+const INK_FILE_MISSING_WORDS =
+	"this note's ink file is missing.\n\nyour ink is still on screen. your next stroke saves it again.";
 const DEBOUNCE_MS = 700;
 const PATH = "note.md";
 const PAGE_ID = "p1";
@@ -356,7 +359,10 @@ function persistentlyMissingAtPrepare(base: FakeAdapter): {
 	return {
 		adapter: hooked(base, {
 			exists: async (path) => {
-				if (!active || path !== LIVE || ++liveExists % 3 !== 0) return undefined;
+				// Counted only while the live file is present: the save sequence also asks
+				// for the live path after moving it aside (R5, move then judge), where an
+				// absent answer is the truth and there is nothing to hide.
+				if (!active || path !== LIVE || !base.files.has(path) || ++liveExists % 3 !== 0) return undefined;
 				const text = base.files.get(path);
 				const mtime = base.mtimes.get(path);
 				if (text === undefined || mtime === undefined) {
@@ -689,7 +695,7 @@ describe("UNAVAILABLE PRESERVATION NEVER FALLS THROUGH TO PLAIN RELOAD", () => {
 
 			vi.setSystemTime(Date.now() + ADOPTION_QUIET_MS + 1);
 			await pollBridge(a).tick();
-			expect(a.notices).not.toContain(ADOPTION_STILL_FAILING);
+			expect(a.notices).toEqual([ADOPTION_STILL_FAILING]);
 
 			a.ink.commit(PATH, stroke("after-held"));
 			await a.store.flush();
@@ -781,13 +787,13 @@ describe("UNAVAILABLE PRESERVATION NEVER FALLS THROUGH TO PLAIN RELOAD", () => {
 
 		await vi.advanceTimersByTimeAsync(ADOPTION_QUIET_MS + 1_000);
 		await poll.tick();
-		expect(a.notices).toEqual([ADOPTION_STILL_FAILING]);
+		expect(a.notices).toEqual([INK_FILE_MISSING_WORDS]);
 		expect(artifacts()).toEqual([]);
 		expect(a.accepts).toBe(0);
 
 		await vi.advanceTimersByTimeAsync(ADOPTION_QUIET_MS + 1_000);
 		await poll.tick();
-		expect(a.notices).toEqual([ADOPTION_STILL_FAILING]);
+		expect(a.notices).toEqual([INK_FILE_MISSING_WORDS]);
 
 		// The notice is not an adoption, a lock or a save. Editing remains live,
 		// and the real write guard still preserves the exact incoming bytes.
@@ -819,7 +825,7 @@ describe("UNAVAILABLE PRESERVATION NEVER FALLS THROUGH TO PLAIN RELOAD", () => {
 
 		await vi.advanceTimersByTimeAsync(ADOPTION_QUIET_MS + 1_000);
 		await poll.tick();
-		expect(a.notices).toEqual([ADOPTION_STILL_FAILING]);
+		expect(a.notices).toEqual([INK_FILE_MISSING_WORDS]);
 		expect(a.ink.captureHistoryIdentity(PATH)).toBe(identity);
 		expect(a.ink.strokes(PATH).map((s) => s.id)).toEqual(["a", "local"]);
 		expect(a.accepts).toBe(0);
@@ -827,7 +833,7 @@ describe("UNAVAILABLE PRESERVATION NEVER FALLS THROUGH TO PLAIN RELOAD", () => {
 
 		await vi.advanceTimersByTimeAsync(ADOPTION_QUIET_MS + 1_000);
 		await poll.tick();
-		expect(a.notices).toEqual([ADOPTION_STILL_FAILING]);
+		expect(a.notices).toEqual([INK_FILE_MISSING_WORDS]);
 		expect(fake.files.has(LIVE)).toBe(false);
 
 		// The hold retained the settled base as well as the visible strokes:
@@ -1541,6 +1547,104 @@ describe("NOTIFICATION TIMING", () => {
 		vi.setSystemTime(Date.now() + 2_000);
 		await a.ink.adoptExternal(PATH, () => true);
 		// 9s since the FIRST failure, but only 2s since the run restarted.
+		expect(a.notices).toEqual([]);
+	});
+
+	it("a run that ends WITHOUT adopting still resets the patience, same as a success (audit 128)", async () => {
+		// Fail once (arms the quiet-period clock), then a run that neither
+		// fails NOR adopts - a local edit supersedes the prepared adoption
+		// mid-flight, same mechanism as "A LOCAL MUTATION DURING
+		// PRESERVATION". That round still proves the disk pipe is healthy:
+		// `prepare` did real I/O and came back with an answer. The clock
+		// must restart there too, not only on a completed adoption, or one
+		// unrelated blip long afterwards shows the notice at once instead
+		// of waiting through the quiet period again.
+		const failing = { on: true };
+		let committed = false;
+		let a!: Device;
+		const adapter = hooked(fake, {
+			failWrite: (p) => failing.on && p.endsWith("-outgoing.json"),
+			beforeWrite: (p) => {
+				if (!committed && !failing.on && p.endsWith("-outgoing.json")) {
+					committed = true;
+					a.ink.commit(PATH, stroke("mid"));
+				}
+			},
+		});
+		a = await settledDeviceA(adapter);
+		externalReplacement(["a", "remote"]);
+		await a.ink.adoptExternal(PATH, () => true);
+		expect(a.notices).toEqual([]); // still inside the window
+
+		vi.setSystemTime(Date.now() + 7_000);
+		failing.on = false;
+		externalReplacement(["a", "remote2"]);
+		const held = await a.ink.adoptExternal(PATH, () => true);
+		expect(held.outcome).toBe("held"); // superseded locally, not adopted
+		expect(committed).toBe(true);
+		expect(a.notices).toEqual([]);
+
+		failing.on = true;
+		externalReplacement(["a", "remote3"]);
+		await a.ink.adoptExternal(PATH, () => true);
+		vi.setSystemTime(Date.now() + 2_000);
+		await a.ink.adoptExternal(PATH, () => true);
+		// 9s since the FIRST failure, but only 2s since the held run.
+		expect(a.notices).toEqual([]);
+	});
+
+	it("a failure run that ends in silence (unchanged polls) restarts the patience (audit 128)", async () => {
+		const adapter = hooked(fake, { failWrite: (p) => p.endsWith("-outgoing.json") });
+		const a = await settledDeviceA(adapter);
+		externalReplacement(["a", "remote"]);
+		await a.ink.adoptExternal(PATH, () => true);
+		expect(a.notices).toEqual([]);
+
+		// The poll saw the sidecar unchanged for a minute and never called
+		// adoptExternal. One later blip is a new run, not the old one.
+		vi.setSystemTime(Date.now() + 60_000);
+		externalReplacement(["a", "remote2"]);
+		await a.ink.adoptExternal(PATH, () => true);
+		expect(a.notices).toEqual([]);
+
+		// A run that keeps failing at poll speed still speaks, once.
+		vi.setSystemTime(Date.now() + 8_001);
+		await a.ink.adoptExternal(PATH, () => true);
+		expect(a.notices).toHaveLength(1);
+	});
+
+	it("a stale preparation resets the patience too", async () => {
+		const failing = { on: true };
+		let bump = false;
+		const adapter = hooked(fake, {
+			failWrite: (p) => failing.on && p.endsWith("-outgoing.json"),
+			afterWrite: (p) => {
+				// A newer external revision lands while the copies are written.
+				if (bump && p.endsWith("-outgoing.json")) {
+					bump = false;
+					externalReplacement(["a", "newer"]);
+				}
+			},
+		});
+		const a = await settledDeviceA(adapter);
+		externalReplacement(["a", "remote"]);
+		await a.ink.adoptExternal(PATH, () => true);
+		expect(a.notices).toEqual([]);
+
+		vi.setSystemTime(Date.now() + 7_000);
+		failing.on = false;
+		bump = true;
+		externalReplacement(["a", "remote2"]);
+		const held = await a.ink.adoptExternal(PATH, () => true);
+		expect(held.outcome).toBe("held");
+		expect(bump).toBe(false); // the stale path really ran
+
+		failing.on = true;
+		externalReplacement(["a", "remote3"]);
+		await a.ink.adoptExternal(PATH, () => true);
+		vi.setSystemTime(Date.now() + 2_000);
+		await a.ink.adoptExternal(PATH, () => true);
+		// 9s since the FIRST failure, but only 2s since the stale round.
 		expect(a.notices).toEqual([]);
 	});
 });

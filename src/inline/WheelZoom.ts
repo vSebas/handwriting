@@ -1,5 +1,5 @@
 /**
- * s136: A TOUCHPAD PINCH, AND CTRL+WHEEL, ZOOM THE NOTE.
+ * A TOUCHPAD PINCH, AND CTRL+WHEEL, ZOOM THE NOTE.
  *
  * Windows delivers a precision-touchpad pinch as a wheel event with `ctrlKey`
  * set - there is no touch contact to route - and Obsidian reads that as its
@@ -35,13 +35,13 @@
 export const WHEEL_ZOOM_K = 0.002;
 
 /**
- * s199, Alan direct: the same travel under two fingers on a touchpad moves the
- * zoom 1.5 times as far as it does under a mouse wheel. A touchpad pinch
+ * Alan direct: the same travel under two fingers on a touchpad moves the
+ * zoom 2.5 times as far as it does under a mouse wheel. A touchpad pinch
  * arrives as a stream of small pixel deltas and a mouse wheel as a few big
  * notches, and a hand that pinches expects the whole range within one gesture.
  * The mouse keeps 0.002: nothing about a wheel notch changed.
  */
-export const TOUCHPAD_ZOOM_K = 0.003;
+export const TOUCHPAD_ZOOM_K = 0.005;
 
 /**
  * A wheel notch is coarse: a line or page unit, or a pixel count at least this
@@ -145,7 +145,7 @@ export class WheelZoomRun {
 			this.live = true;
 			this.travelPx = 0;
 			this.anchor = { x: e.x, y: e.y };
-			// s199: the kind is read here and nowhere else, so one gesture keeps one gain.
+			// The kind is read here and nowhere else, so one gesture keeps one gain.
 			this.kind = wheelRunKind(e.deltaY, e.deltaMode);
 			steps.push({ phase: "start", ratio: 1, centroid: this.centroid });
 		}

@@ -13,13 +13,14 @@
  * the render tests as text too: every relative specifier - in real import
  * statements and inside those stdin strings alike - must resolve to a file.
  *
- * Specifiers come in two address spaces, and a specifier passes if it resolves
- * in either: real imports are relative to test/render/, stdin specifiers to
- * the repo root (their build uses `resolveDir: "../../"`). Collapsing the two
- * trades a sliver of strictness (a dead import that happens to exist in the
- * other space) for not having to parse which string sits inside which
- * template, and the failure this guard exists for - a deleted module - fails
- * both spaces anyway.
+ * Specifiers come in a few address spaces, and a specifier passes if it
+ * resolves in any: real imports are relative to test/render/, stdin
+ * specifiers to the repo root (their build uses `resolveDir: "../../"`), and
+ * a stdin that stands in for a source module (upstream's EscapeFamily) uses
+ * that module's own folder under src/. Collapsing the spaces trades a sliver
+ * of strictness (a dead import that happens to exist in another space) for
+ * not having to parse which string sits inside which template, and the
+ * failure this guard exists for - a deleted module - fails every space anyway.
  */
 
 import { describe, expect, it } from "vitest";
@@ -28,6 +29,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const RENDER_DIR = `${ROOT}test/render`;
+/** Every folder a stdin entry may be rooted in: see the header. */
+const BASES = [RENDER_DIR, ROOT, `${ROOT}src`,
+	...readdirSync(`${ROOT}src`).filter(name => !name.includes(".")).map(name => `${ROOT}src/${name}`)];
 
 /** Matches `from "./x"`, `import "./x"` and `import("./x")` - plain text, so
  * it sees inside esbuild stdin template strings exactly like real code. */
@@ -59,7 +63,7 @@ describe("render test entry imports", () => {
 		for (const file of files) {
 			for (const spec of specifiersIn(readFileSync(`${RENDER_DIR}/${file}`, "utf8"))) {
 				checked++;
-				if (!resolves(RENDER_DIR, spec) && !resolves(ROOT, spec)) {
+				if (!BASES.some(base => resolves(base, spec))) {
 					missing.push(`test/render/${file}: "${spec}"`);
 				}
 			}

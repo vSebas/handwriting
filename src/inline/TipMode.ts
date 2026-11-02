@@ -2,8 +2,8 @@
  * What the pen TIP currently is, as one value.
  *
  * The pen decides what it is at contact and needs no mode at all: eraser end
- * erases, side button lassos, tip inks. That only works on hardware that HAS an
- * eraser end and a side button; plenty has neither, so each of those meanings also
+ * erases, side button follows its device setting, tip inks. That only works
+ * on hardware that HAS an eraser end and a side button; plenty has neither, so each of those meanings also
  * has an explicit mode that gives it to the tip. Only one can win.
  *
  * This was four independent booleans kept mutually exclusive by hand, and
@@ -25,6 +25,112 @@ import { markToolPicked } from "./MouseInk";
 export type TipMode = "nib" | "eraser" | "lasso" | "space" | "pan";
 
 let mode: TipMode = "nib";
+let sideButtonErases = false;
+
+/** Current device choice; contact never changes the selected toolbar tool. */
+export function setSideButtonErases(enabled: boolean): void {
+	sideButtonErases = enabled;
+}
+
+export function sideButtonErasesEnabled(): boolean {
+	return sideButtonErases;
+}
+
+export interface SideButtonStore {
+	load(key: string): unknown;
+	save(key: string, value: string): void;
+	defaultErases: boolean;
+}
+
+export const SIDE_BUTTON_ERASES_KEY = "handwriting-side-button-erases";
+let sideButtonStore: SideButtonStore | null = null;
+
+/** Register the per-device, per-vault store before restoring the choice. */
+export function setSideButtonStore(store: SideButtonStore | null): void {
+	sideButtonStore = store;
+}
+
+export function restoreSideButtonErases(): void {
+	let stored: unknown;
+	try {
+		stored = sideButtonStore?.load(SIDE_BUTTON_ERASES_KEY);
+	} catch {
+		// A denied store retains the platform default for this session.
+	}
+	setSideButtonErases(stored === true || stored === "true" ? true
+		: stored === false || stored === "false" ? false
+			: sideButtonStore?.defaultErases ?? false);
+	// The click-in-the-air switch is the same device's choice, restored at the same moment. Default on.
+	let air: unknown;
+	try {
+		air = sideButtonStore?.load(AIR_SWITCH_KEY);
+	} catch {
+		// A denied store keeps the default for this session.
+	}
+	airSwitch = !(air === false || air === "false");
+}
+
+/**
+ * Android's half of the side button: a click with the pen in the air switches
+ * pen and eraser (SideButtonAir.ts). Android never forwards a touch made with
+ * the button held, so the contact choice above does nothing there and this
+ * on/off switch takes its row in Settings. Kept on this device, never synced.
+ */
+export const AIR_SWITCH_KEY = "handwriting-side-button-air-switch";
+let airSwitch = true;
+
+export function airSwitchEnabled(): boolean {
+	return airSwitch;
+}
+
+/** The switch takes effect now, even if local persistence is unavailable. */
+export function saveAirSwitch(enabled: boolean): void {
+	airSwitch = enabled;
+	try {
+		sideButtonStore?.save(AIR_SWITCH_KEY, String(enabled));
+	} catch {
+		// The current session keeps the choice; no synced fallback is written.
+	}
+}
+
+/**
+ * The one-time note, "Click the pen button while hovering over the screen to
+ * switch pen and eraser.", is shown once per device: the first time Android takes a touch
+ * made with the button held. True means show it now; the device records that
+ * it was shown. Never while the switch is off. A store that cannot save still
+ * shows it only once this session.
+ */
+export const AIR_HINT_SHOWN_KEY = "handwriting-side-button-air-hint-shown";
+let airHintShownThisSession = false;
+
+export function takeAirSwitchHint(): boolean {
+	if (!airSwitch || airHintShownThisSession) return false;
+	airHintShownThisSession = true;
+	let shown: unknown;
+	try {
+		shown = sideButtonStore?.load(AIR_HINT_SHOWN_KEY);
+	} catch {
+		// Unreadable: treat as not shown; the session flag above keeps it to once.
+	}
+	if (shown === true || shown === "true") return false;
+	try {
+		sideButtonStore?.save(AIR_HINT_SHOWN_KEY, "true");
+	} catch {
+		// Shown once this session all the same.
+	}
+	return true;
+}
+
+/** The setting takes effect now, even if local persistence is unavailable. */
+export function saveSideButtonErases(enabled: boolean): void {
+	setSideButtonErases(enabled);
+	try {
+		sideButtonStore?.save(SIDE_BUTTON_ERASES_KEY, String(enabled));
+	} catch {
+		// The current session keeps the choice; no synced fallback is written.
+	}
+}
+
 let listener: (() => void) | null = null;
 
 /**
@@ -87,7 +193,7 @@ export function releaseTipMode(): void {
  * hardware the pen has and the mode the strip is in.
  *
  * The header above states this rule in prose - eraser end erases, side button
- * lassos, tip inks, and each meaning also has an explicit mode for hardware
+ * follows the device choice, tip inks, and each meaning also has an explicit mode for hardware
  * that has neither, "only one can win". It was implemented TWICE, once per ink
  * surface, in `InkOverlay.penDown` and `PdfInkController.penDown`, and the two
  * copies were written months apart. Both copies were right on the day this was
@@ -97,7 +203,7 @@ export function releaseTipMode(): void {
  * hardest to reach (hardware, 2026-08-29) - and a rule with two implementations
  * is a rule that can diverge again. This one now has one.
  *
- * PURE and DOM-free, taking the two `PointerEvent` fields rather than the
+ * DOM-free, reading the app policy and taking the two `PointerEvent` fields rather than the
  * event: it is the same shape as `bandEraserIntent` (InlinePenRouter.ts), it
  * keeps this module testable, and it lets the pdf surface - whose `penDown`
  * takes `ev` as optional, because its own teardown paths call it without one -
@@ -124,8 +230,9 @@ export function penContactIntent(buttons: number, button: number, m: TipMode): P
 	// transition that reports it.
 	if ((buttons & 32) !== 0 || button === 5 || m === "eraser") return "erase";
 	// Then the side button, held at contact. `buttons & 2` is the secondary
-	// button, and "lasso" is the mode that gives the same meaning to hardware
-	// with no side button - every apple pencil, every mouse.
+	// button; the device choice controls it. Toolbar lasso stays available
+	// on hardware with no side button, including Apple Pencil.
+	if (sideButtonErases && (buttons & 2) !== 0) return "erase";
 	if ((buttons & 2) !== 0 || m === "lasso") return "lasso";
 	// The remaining modes only reach the tip once no button has spoken for it.
 	if (m === "pan") return "pan";
@@ -135,6 +242,10 @@ export function penContactIntent(buttons: number, button: number, m: TipMode): P
 
 /** Test seam. */
 export function resetTipModeForTest(): void {
+	sideButtonStore = null;
+	sideButtonErases = false;
+	airSwitch = true;
+	airHintShownThisSession = false;
 	mode = "nib";
 	listener = null;
 }

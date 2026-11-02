@@ -1,6 +1,59 @@
 import { describe, expect, it } from "vitest";
-import { bboxVisibleInViewport, classifyScroll } from "./ScrollProbe";
+import { bboxVisibleInViewport, classifyScroll, clearScrollProbe, formatScrollProbe, scrollProbeSave, scrollProbeSchedule } from "./ScrollProbe";
+import { setDiagnosticsEnabled } from "../diag/DiagSwitch";
 import { backstopMayEnd, summarizeAcquisitions } from "./InlinePenRouter";
+
+describe("scroll probe build header", () => {
+	it.each(["1.4.22", "1.4.23"])("prints supplied version %s and exact content identity with no samples", (version) => {
+		clearScrollProbe();
+		setDiagnosticsEnabled(false);
+		const build = { version, sourceTree: `content-sha256:${"a".repeat(64)}` };
+		expect(formatScrollProbe(build).split("\n")[0]).toBe(
+			`Handwriting scroll probe: version=${version} build=${build.sourceTree}`,
+		);
+		expect(formatScrollProbe(build)).toContain("no samples");
+	});
+
+	it.each(["1.4.22", "1.4.23"])("prints supplied version %s and keeps development identity unverified on a populated capture", (version) => {
+		clearScrollProbe();
+		setDiagnosticsEnabled(true);
+		try {
+			scrollProbeSchedule("header-test");
+			expect(formatScrollProbe({ version, sourceTree: "unverified" })).toContain(
+				`Handwriting scroll probe: version=${version} build=unverified\n1 event(s)`,
+			);
+		} finally {
+			setDiagnosticsEnabled(false);
+			clearScrollProbe();
+		}
+	});
+
+	it("labels missing build metadata without inventing an identity", () => {
+		clearScrollProbe();
+		expect(formatScrollProbe()).toContain("version=unknown build=unverified");
+	});
+});
+
+describe("scroll probe save line", () => {
+	it("prints each save's synchronous write and read ms and the text length, and nothing with diagnostics off", () => {
+		clearScrollProbe();
+		setDiagnosticsEnabled(false);
+		scrollProbeSave({ writeSyncMs: 9, readSyncMs: 1, len: 10 });
+		expect(formatScrollProbe()).toContain("no samples");
+		setDiagnosticsEnabled(true);
+		try {
+			scrollProbeSave({ writeSyncMs: 31.25, readSyncMs: 2.5, len: 25307157 });
+			scrollProbeSave({ writeSyncMs: 0.4, readSyncMs: null, len: 1200 });
+			const lines = formatScrollProbe().split("\n").filter(l => / SAVE {5}/.test(l));
+			expect(lines, formatScrollProbe()).toHaveLength(2);
+			expect(lines[0]).toMatch(/ SAVE {5}write-sync=31\.25ms read-sync=2\.50ms len=25307157$/);
+			expect(lines[1]).toMatch(/ SAVE {5}write-sync=0\.40ms read-sync=none len=1200$/);
+		} finally {
+			setDiagnosticsEnabled(false);
+			clearScrollProbe();
+		}
+	});
+});
 
 describe("bboxVisibleInViewport", () => {
 	const cam = { x: 0, y: 1000 };

@@ -25,7 +25,7 @@
  * builds, and the assertions re-derive every normalised value by calling the
  * same normaliser main.ts calls rather than restating a number.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import HandwritingPlugin, { HandwritingSettingTab } from "./main";
 import { exportInkColor, inkExportReadabilityEnabled } from "./ink/InkTheme";
@@ -97,42 +97,6 @@ async function loadThenSave(raw: unknown): Promise<Harness> {
 }
 
 describe("settings control consistency preserves saved behavior", () => {
-	it("stores the desktop service token for synced plugin settings", async () => {
-		ensureDocument();
-		// Enabled explicitly: startLocalCodexService now refuses when the
-		// feature is off, and this test is about the token write-back.
-		const plugin = fakePlugin({ codexEnabled: true, codexServiceToken: "" });
-		await proto.loadSettings.call(plugin);
-		(plugin as unknown as Record<string, unknown>).codexService = { start: async () => "generated-token-at-least-24-characters" };
-		await (plugin as unknown as { startLocalCodexService(): Promise<void> }).startLocalCodexService();
-		expect(plugin.settings.codexServiceToken).toBe("generated-token-at-least-24-characters");
-		expect(plugin.saved?.codexServiceToken).toBe("generated-token-at-least-24-characters");
-	});
-	it("normalizes Codex service settings", async () => {
-		const configured = await loadThenSave({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexModel: "gpt-choice", codexServiceRoot: "C:/obsolete" });
-		expect(configured.saved).toMatchObject({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexModel: "gpt-choice" });
-		expect(configured.saved).not.toHaveProperty("codexServiceRoot");
-		const invalid = await loadThenSave({ codexServiceUrl: {}, codexServiceToken: 42, codexModel: "bad model" });
-		expect(invalid.settings.codexServiceUrl).toBe("http://127.0.0.1:8765");
-		expect(invalid.settings.codexServiceToken).toBe("");
-		expect(invalid.settings.codexModel).toBe("");
-	});
-	it("enables Codex only for an explicit stored opt-in", async () => {
-		// A stored token is NOT an opt-in signal: the pre-gate builds persisted
-		// a generated token on every desktop vault whose user merely had a
-		// signed-in Codex CLI, so inferring from it kept those users silently
-		// hosting the bridge against the off-by-default promise (review
-		// finding, 2026-10-01). Only the stored boolean itself turns it on;
-		// a vault that upgraded through a token-migrating build keeps its
-		// persisted true, and everyone else flips the toggle once.
-		expect((await loadThenSave({ codexServiceToken: "test-token" })).settings.codexEnabled).toBe(false);
-		expect((await loadThenSave({ codexServiceToken: "" })).settings.codexEnabled).toBe(false);
-		expect((await loadThenSave({})).settings.codexEnabled).toBe(false);
-		expect((await loadThenSave({ codexEnabled: false, codexServiceToken: "test-token" })).settings.codexEnabled).toBe(false);
-		expect((await loadThenSave({ codexEnabled: true })).settings.codexEnabled).toBe(true);
-		// A rotten value is normalised, never trusted.
-		expect((await loadThenSave({ codexEnabled: "yes" })).settings.codexEnabled).toBe(false);
-	});
 	it("presents both color controls as dropdowns and identifies global paper scope", async () => {
 		const plugin = await loadThenSave({});
 		(plugin as unknown as Record<string, unknown>).manifest = { version: "1.5.0" };
@@ -150,12 +114,12 @@ describe("settings control consistency preserves saved behavior", () => {
 		expect(exported.control).toEqual({ type: "dropdown", key: "inkReadableInExports", options: { auto: "Automatic readability", keep: "Keep original colors" } });
 		expect(pdf.control?.type).toBe("dropdown");
 		expect(pdf.control?.options).toEqual({ darken: "Darken for light pages", lighten: "Lighten for dark pages", keep: "Keep original colors" });
-		expect(rows.find(row => row.name === "Paper background")?.desc).toBe("Lined, grid, or dotted paper. Global setting. Default none.");
+		expect(rows.find(row => row.name === "Paper background")?.desc).toBe("Lined, grid, or dotted paper. Global setting. A note can override it with handwriting-paper in its frontmatter. Default none.");
 		// The zoom bar's option labels are copied verbatim from the Toolbar
 		// visibility row beside it - the two settings behave identically.
 		const toolbarVisibility = rows.find(row => row.name === "Toolbar visibility")!;
 		const zoomBar = rows.find(row => row.name === "Zoom bar")!;
-		// The row also carries a `disabled` predicate since s138 (SettingsCanvasRows.test.ts
+		// The row also carries a `disabled` predicate (SettingsCanvasRows.test.ts
 		// owns what it says); the shape asserted here is the dropdown itself.
 		expect(zoomBar.control?.type).toBe("dropdown");
 		expect(zoomBar.control?.key).toBe("noteZoomControls");
@@ -209,7 +173,7 @@ describe("loadSettings carries keys this build does not know", () => {
 		resetNoteZoomControlsForTest();
 	});
 
-	// The EDIT half of this case went with the canvas page in s197: the view
+	// The EDIT half of this case went with the canvas page: the view
 	// that wrote saved views, and the `editCanvasSavedViews` path that renamed
 	// them, are both deleted. What still matters - and is what this case was
 	// really guarding - is that a vault which HAS these records keeps them
@@ -507,5 +471,38 @@ describe("the pdf ink colour mode falls back to darken unless a vault says other
 				`an unrecognised ${JSON.stringify(bad)} must not become a mode`
 			).toBe("darken");
 		}
+	});
+
+	it("stores the desktop service token for synced plugin settings", async () => {
+		ensureDocument();
+		// Enabled explicitly: startLocalCodexService refuses when the feature
+		// is off, and this test is about the token write-back.
+		const plugin = fakePlugin({ codexEnabled: true, codexServiceToken: "" });
+		await proto.loadSettings.call(plugin);
+		(plugin as unknown as Record<string, unknown>).codexService = { start: async () => "generated-token-at-least-24-characters" };
+		await (plugin as unknown as { startLocalCodexService(): Promise<void> }).startLocalCodexService();
+		expect(plugin.settings.codexServiceToken).toBe("generated-token-at-least-24-characters");
+		expect(plugin.saved?.codexServiceToken).toBe("generated-token-at-least-24-characters");
+	});
+	it("normalizes Codex service settings", async () => {
+		const configured = await loadThenSave({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexModel: "gpt-choice", codexServiceRoot: "C:/obsolete" });
+		expect(configured.saved).toMatchObject({ codexServiceUrl: "http://192.168.1.20:8765", codexServiceToken: "test-token", codexModel: "gpt-choice" });
+		const invalid = await loadThenSave({ codexServiceUrl: {}, codexServiceToken: 42, codexModel: "bad model" });
+		expect(invalid.settings.codexServiceUrl).toBe("http://127.0.0.1:8765");
+		expect(invalid.settings.codexServiceToken).toBe("");
+		expect(invalid.settings.codexModel).toBe("");
+	});
+	it("enables Codex only for an explicit stored opt-in", async () => {
+		// A stored token is NOT an opt-in signal: the pre-gate builds persisted
+		// a generated token on every desktop vault whose user merely had a
+		// signed-in Codex CLI, so inferring from it kept those users silently
+		// hosting the bridge against the off-by-default promise (fork review
+		// finding, 2026-10-01). Only the stored boolean itself turns it on.
+		expect((await loadThenSave({ codexServiceToken: "test-token" })).settings.codexEnabled).toBe(false);
+		expect((await loadThenSave({})).settings.codexEnabled).toBe(false);
+		expect((await loadThenSave({ codexEnabled: false, codexServiceToken: "test-token" })).settings.codexEnabled).toBe(false);
+		expect((await loadThenSave({ codexEnabled: true })).settings.codexEnabled).toBe(true);
+		// A rotten value is normalised, never trusted.
+		expect((await loadThenSave({ codexEnabled: "yes" })).settings.codexEnabled).toBe(false);
 	});
 });

@@ -14,6 +14,10 @@ import {
 } from "./InsertSpace";
 import { InkPoint, InkStroke, computeBBox } from "../ink/Stroke";
 import { translateStroke } from "../objects/Selection";
+import { parsePage } from "../model/PageData";
+import { existsSync, readFileSync } from "node:fs";
+
+declare const process: { env: Record<string, string | undefined> };
 
 // Exercise the ordinary-note policy through the actual production cache.
 // PDF callers retain legacyRowsOf and the default membership argument.
@@ -144,6 +148,73 @@ describe("rowsOf", () => {
 	});
 });
 
+describe("rowsOf PDF mark pass", () => {
+	it("judges every narrow row against its host as the first pass left it, not as grown by earlier joins", () => {
+		// One wide host (height 10) with narrow rows chained above it, each a pixel
+		// further left. Only m1 (gap 5) is close enough to the host itself. m2 sits
+		// 22 above the host's own top, so it stays a row even though m1 joined and
+		// the host is now taller: a joined row does not change what the next one is
+		// judged against.
+		const page = [
+			stroke("host", [pt(0, 200), pt(300, 210)]),
+			stroke("m1", [pt(-1, 186), pt(9, 195)]),
+			stroke("m2", [pt(-2, 170), pt(8, 178)]),
+			stroke("m3", [pt(-3, 146), pt(7, 156)]),
+			stroke("m4", [pt(-4, 86), pt(6, 96)]),
+			stroke("m5", [pt(-5, -54), pt(5, -44)]),
+		];
+		expect(legacyRowsOf(page)).toEqual([
+			{ top: -54, bottom: -44, ids: ["m5"] },
+			{ top: 86, bottom: 96, ids: ["m4"] },
+			{ top: 146, bottom: 156, ids: ["m3"] },
+			{ top: 170, bottom: 178, ids: ["m2"] },
+			{ top: 186, bottom: 210, ids: ["host", "m1"] },
+		]);
+	});
+
+	it("keeps both dots of a colon with their line", () => {
+		// The upper dot is 20 above the line's top, inside the line's own height of
+		// 30, so judging against the first-pass line still joins it.
+		const page = [
+			stroke("word", [pt(0, 200), pt(300, 230)]),
+			stroke("dot-low", [pt(150, 188), pt(151, 192)]),
+			stroke("dot-up", [pt(150, 176), pt(151, 180)]),
+		];
+		expect(legacyRowsOf(page)).toEqual([
+			{ top: 176, bottom: 230, ids: ["word", "dot-low", "dot-up"] },
+		]);
+	});
+
+	it("judges a mark against the host's first-pass x-span, not the span a joined mark widened", () => {
+		// A tall host. m1 sits one pixel left of it and joins. m2 sits two pixels left: inside the host's first-pass height, outside
+		// its first-pass x-span, and inside the span only once m1 has joined. Judged against the grown span it would join too.
+		const page = [
+			stroke("host", [pt(0, 200), pt(300, 230)]),
+			stroke("m1", [pt(-1, 190), pt(9, 195)]),
+			stroke("m2", [pt(-2, 180), pt(8, 185)]),
+		];
+		expect(legacyRowsOf(page)).toEqual([
+			{ top: 180, bottom: 185, ids: ["m2"] },
+			{ top: 190, bottom: 230, ids: ["host", "m1"] },
+		]);
+	});
+
+	it("judges a mark against the host's first-pass top and height, not the top a joined mark lifted", () => {
+		// Every mark sits inside the host's first-pass x-span, so only the height and gap legs decide. m1 joins (gap 5, under the
+		// host's height of 10) and lifts the live host top to 190. m2 is 14 above the first-pass top, over the first-pass height,
+		// so it stays its own row; a live height of 20 or a live gap of 4 would join it.
+		const page = [
+			stroke("host", [pt(0, 200), pt(300, 210)]),
+			stroke("m1", [pt(10, 190), pt(20, 195)]),
+			stroke("m2", [pt(10, 182), pt(20, 186)]),
+		];
+		expect(legacyRowsOf(page)).toEqual([
+			{ top: 182, bottom: 186, ids: ["m2"] },
+			{ top: 190, bottom: 210, ids: ["host", "m1"] },
+		]);
+	});
+});
+
 describe("snapLine", () => {
 	const rows = rowsOf([letter("up", 0, 100), letter("down", 0, 200)]);
 
@@ -176,7 +247,7 @@ describe("strokeIdsBelow (insert-space membership)", () => {
 	it("classifies each local group at the original guide, never another group's edge",()=>{
 		const page=localColumns();
 		// Isolate the second trap from group formation: a global cut would
-		// snap130 to the left group's150 and incorrectly exclude right140.
+		// snap 130 to the left group's 150 and incorrectly exclude right 140.
 		const groups=page.map(s=>({top:s.points[0]!.y,bottom:s.points[1]!.y,ids:[s.id]}));
 		expect(strokeIdsBelow(page,130,groups)).toEqual(["right-lower"]);
 	});
@@ -322,4 +393,134 @@ describe("blankLinesAbove", () => {
 	it("stops at the top of the document", () => {
 		expect(blankLinesAbove(reader(["", "", "beta"]), 3, 9)).toBe(2);
 	});
+});
+
+/**
+ * Insert space item 11 (b): an insert space that opened space shifts the
+ * cached rows instead of rebuilding them, and the shifted rows are exactly
+ * what a rebuild from the moved points gives (top, bottom, ids, order).
+ * Steps replay a drag: several moves (some upward) then the release's
+ * correction, each one moveStrokes call over the frozen ids.
+ */
+describe("InsertSpaceRows.shift", () => {
+	const rnd = (seed: number) => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+	/** A stroke of n points along a slanted line, mixed lengths and fractional coordinates. */
+	const line = (id: string, x0: number, y0: number, x1: number, y1: number, n: number) =>
+		stroke(id, Array.from({ length: n }, (_, i) => pt(x0 + (x1 - x0) * i / Math.max(1, n - 1), y0 + (y1 - y0) * ((i * 7) % n) / Math.max(1, n - 1))));
+	/** Lines of words (wide word gaps on even seeds, so some joins need the full reach), dots over some words (a few touching
+	 * the word's top), a second column, tall strokes across lines. */
+	function page(seed: number, lines: number): InkStroke[] {
+		const r = rnd(seed), out: InkStroke[] = [];
+		let n = 0;
+		for (let i = 0; i < lines; i++) {
+			const base = i * 31.37;
+			for (let col = 0; col < (r() < 0.3 ? 2 : 1); col++) {
+				let x = col * 420 + r() * 10;
+				for (let w = 1 + Math.floor(r() * 5); w > 0; w--) {
+					const width = 10 + r() * 60, h = 8 + r() * 14;
+					out.push(line(`w${n++}`, x, base + 20 - h, x + width, base + 20, 2 + Math.floor(r() * 9)));
+					if (r() < 0.4) {
+						const dx = x + r() * width, touch = r() < 0.3;
+						out.push(line(`d${n++}`, dx, base + 20 - h - (touch ? 2 : 3 + r() * 3), dx + 1 + r() * 2, base + 20 - h + (touch ? 0.5 : -2), 2));
+					}
+					if (r() < 0.05) out.push(line(`t${n++}`, x, base - 20, x + 3, base + 40, 5));
+					x += width + 8 + r() * (seed % 2 ? 10 : 50);
+				}
+			}
+		}
+		return out;
+	}
+	/** One drag over `ids`, as moveStrokes does it: every step translates each listed stroke once. */
+	const drag = (strokes: readonly InkStroke[], ids: readonly string[], steps: readonly number[]) => {
+		const wanted = new Set(ids);
+		for (const d of steps) for (const s of strokes) if (wanted.has(s.id)) translateStroke(s, 0, d);
+	};
+	/** Shift, then compare with a rebuild. Returns whether the shift was taken. */
+	function trial(strokes: InkStroke[], seam: number, steps: number[]): boolean {
+		const cache = new InsertSpaceRows(), before = cache.get(strokes);
+		const ids = idsBelow(strokes, seam, before);
+		drag(strokes, ids, steps);
+		// A taken shift reads no stroke's points, and neither does the next ask: no rebuild.
+		let reads = 0;
+		const pts = strokes.map(s => s.points);
+		strokes.forEach((s, i) => Object.defineProperty(s, "points", { get: () => (reads++, pts[i]), configurable: true }));
+		const took = cache.shift(strokes, before, ids, steps);
+		const got = cache.get(strokes);
+		strokes.forEach((s, i) => Object.defineProperty(s, "points", { value: pts[i], writable: true, configurable: true, enumerable: true }));
+		if (took) expect(reads, "a taken shift and the ask after it read no points").toBe(0);
+		expect(got, `seam ${seam} steps ${steps.join(",")}`).toEqual(new InsertSpaceRows().get(strokes));
+		drag(strokes, ids, steps.map(d => -d).reverse());
+		return took;
+	}
+	const stepsFor = (r: () => number, net: number) => {
+		const k = 1 + Math.floor(r() * 8), out: number[] = [];
+		let sum = 0;
+		for (let i = 0; i < k; i++) { const d = (r() - 0.3) * 9.3; out.push(d); sum += d; }
+		out.push(net - sum);
+		return out;
+	};
+
+	it("equals a rebuild after every opening move over random pages, and is taken on most", () => {
+		let opened = 0, taken = 0;
+		for (let seed = 1; seed <= 12; seed++) {
+			const strokes = page(seed, 30 + seed * 3), r = rnd(seed * 31);
+			for (let k = 0; k < 25; k++) {
+				const seam = r() * 30 * (30 + seed * 3);
+				const net = (1 + Math.floor(r() * 4)) * 23.7;
+				opened++;
+				if (trial(strokes, seam, stepsFor(r, net))) taken++;
+			}
+		}
+		expect(taken, `${taken} of ${opened} opening moves shifted`).toBeGreaterThan(opened * 0.6);
+	});
+
+	it("a closing move is never shifted, and the rebuild still equals", () => {
+		const strokes = page(7, 40), r = rnd(99);
+		for (let k = 0; k < 20; k++) expect(trial(strokes, r() * 1200, stepsFor(r, -(1 + Math.floor(r() * 3)) * 23.7))).toBe(false);
+	});
+
+	it("a dot that overlapped the moved row's top hangs on it after the move, as a rebuild hangs it", () => {
+		// The row's top is the tall stroke at x 50; the dot sits over the short letter at x 28, overlapping that top by 1.
+		const strokes = [
+			stroke("tall", [pt(50, 100), pt(52, 130)]),
+			stroke("short", [pt(20, 115), pt(40, 130)]),
+			stroke("dot", [pt(28, 95), pt(31, 101)]),
+			stroke("above", [pt(0, 40), pt(60, 70)]),
+		];
+		const rows = new InsertSpaceRows().get(strokes);
+		expect(rows.map(row => row.ids.slice().sort().join("+")), "premise: the dot is its own row before the move").toContain("dot");
+		expect(trial(strokes, 99, [10, 14])).toBe(true);
+		drag(strokes, ["tall", "short"], [10, 14]);
+		expect(new InsertSpaceRows().get(strokes).map(row => row.ids.slice().sort().join("+")), "premise: after the move a rebuild hangs the dot on the row").toContain("dot+short+tall");
+	});
+
+	it("anything else changed since the rows were read, or a partly moved row, refuses the shift", () => {
+		const strokes = page(3, 30), cache = new InsertSpaceRows(), before = cache.get(strokes);
+		const ids = idsBelow(strokes, 400, before);
+		drag(strokes, ids, [24]);
+		const other = strokes.find(s => !ids.includes(s.id))!;
+		translateStroke(other, 0, 0.5);
+		expect(cache.shift(strokes, before, ids, [24])).toBe(false);
+		expect(cache.get(strokes)).toEqual(new InsertSpaceRows().get(strokes));
+		// Two overlapping letters are one group; moving one of them is not a move of whole groups.
+		const pair = [stroke("a", [pt(0, 0), pt(10, 20)]), stroke("b", [pt(5, 2), pt(15, 22)])];
+		const fresh = new InsertSpaceRows(), rows = fresh.get(pair);
+		expect(rows.length, "premise: one row").toBe(1);
+		drag(pair, ["a"], [24]);
+		expect(fresh.shift(pair, rows, ["a"], [24])).toBe(false);
+		expect(fresh.get(pair)).toEqual(new InsertSpaceRows().get(pair));
+	});
+
+	const SIDECAR = process.env.HW_ISL_SIDECAR ?? "";
+	(SIDECAR && existsSync(SIDECAR) ? it : it.skip)("equals a rebuild on the heavy note (HW_ISL_SIDECAR)", () => {
+		const strokes = parsePage(readFileSync(SIDECAR, "utf8"), "heavy").data.strokes as InkStroke[];
+		const r = rnd(5);
+		let taken = 0;
+		const tops = strokes.map(s => s.bbox.y);
+		for (let k = 0; k < 12; k++) {
+			const seam = tops[Math.floor(r() * tops.length)]! + (r() - 0.5) * 20;
+			if (trial(strokes, seam, stepsFor(r, (1 + Math.floor(r() * 3)) * 23.7))) taken++;
+		}
+		expect(taken, `${taken} of 12 shifted`).toBeGreaterThan(6);
+	}, 120_000);
 });

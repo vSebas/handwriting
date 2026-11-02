@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import http from "node:http";
-import crypto from "node:crypto";
-import process from "node:process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import * as http from "node:http";
+import * as crypto from "node:crypto";
+import * as process from "node:process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { LocalCodexService } from "./CodexDesktop";

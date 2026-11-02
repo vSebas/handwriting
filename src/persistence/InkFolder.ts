@@ -115,7 +115,13 @@ export async function adoptInkFolder(
  * accident and orphaning them is how they get lost.
  */
 export function isLiveSidecarName(name: string): boolean {
-	return name.endsWith(".json") && !name.includes(".conflict-") && !name.includes(".damaged-");
+	return (
+		name.endsWith(".json") &&
+		!name.includes(".conflict-") &&
+		!name.includes(".damaged-") &&
+		!name.includes(".superseded-") &&
+		!name.includes(".flush-conflict-")
+	);
 }
 
 /** Is there ink in this folder - a live page file, not merely a directory? */
@@ -159,7 +165,9 @@ export function isSidecarFile(name: string): boolean {
 	// `/\.(damaged|conflict)-\d+$/` clause (no trailing ".json") could never
 	// have matched a name the store actually produces (audit-fixes-design.md
 	// 5i I3).
-	return name.endsWith(".json") || name.endsWith(".json.tmp");
+	// And a background flush's carrier, `<id>.json.flush`: left behind in the
+	// old folder, its strokes would never be found beside the new path.
+	return name.endsWith(".json") || name.endsWith(".json.tmp") || name.endsWith(".json.flush");
 }
 
 /**
@@ -200,6 +208,91 @@ export interface MigrationAdapter {
 	mkdir(path: string): Promise<void>;
 	rename(from: string, to: string): Promise<void>;
 	list?(path: string): Promise<{ files: string[]; folders: string[] }>;
+	/** Content check for a bare `.json` name (see `looksLikeOurPage`). Its
+	 *  absence degrades to the old, name-only behaviour - unable to read is
+	 *  no worse than not trying. */
+	read?(path: string): Promise<string>;
+}
+
+/**
+ * Does this JSON look like a page WE wrote, or a carrier for one? Only
+ * asked of a BARE `.json` name (no recovery marker, not `.tmp`/`.flush` -
+ * those are already unambiguous by suffix): a page always carries a numeric
+ * `schemaVersion` and a string `pageId` (`serializePage`); a carrier wraps
+ * one in `{"flushBase":...,"page":{...}}` (`writeTmpNow`). Anything else -
+ * a user's own unrelated `.json` file sitting in the same folder - is not
+ * ours to move. Damage usually keeps the `.damaged-<mtime>` marker (checked by name
+ * before this is ever asked). Unparseable text also answers false here, but
+ * `migrateInkFolder` does NOT read that alone as "not ours": a truncated page
+ * keeps its bare name until a later save renames it, so it moves with the rest
+ * when its name or its text shows it is ours (isMintedIdName, holdsPageKeys).
+ */
+export function looksLikeOurPage(text: string): boolean {
+	let raw: unknown;
+	try {
+		raw = JSON.parse(text);
+	} catch {
+		return false;
+	}
+	if (!raw || typeof raw !== "object") return false;
+	const o = raw as Record<string, unknown>;
+	if (typeof o.schemaVersion === "number" && typeof o.pageId === "string") return true;
+	if ("flushBase" in o && o.page && typeof o.page === "object") {
+		const inner = o.page as Record<string, unknown>;
+		return typeof inner.schemaVersion === "number" && typeof inner.pageId === "string";
+	}
+	return false;
+}
+
+/**
+ * The id shapes this plugin mints, and nothing else: `crypto.randomUUID`,
+ * the fallback `page-<ms>-<base36>` (PageData.newPageId), and the PDF
+ * instance names `pdf-<hex>` and `pdf-<hex>-<n>` (PdfIdentity). A user's own
+ * id that is merely safe to put in a path is not one of them.
+ */
+const MINTED_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|page-\d+-[0-9a-z]+|pdf-[0-9a-f]+(?:-\d+)?)$/;
+
+/** A minted id, or a slides deck's `<minted id>.slides`, as a `.json` name. */
+function isMintedIdName(name: string): boolean {
+	if (!name.endsWith(".json")) return false;
+	const id = name.slice(0, -".json".length);
+	return MINTED_ID.test(id.endsWith(".slides") ? id.slice(0, -".slides".length) : id);
+}
+
+/**
+ * Text evidence that cut-off bytes are a page of ours: it opens as an object
+ * (one optional byte-order mark, any leading JSON whitespace, then `{"`, with
+ * no space after the brace, as JSON.stringify writes it) and holds both page
+ * keys exactly as JSON.stringify writes them, in any order and after any other
+ * key: a preserved foreign top key, or `fontRefPx` first in a page an older
+ * build re-saved, still precede them.
+ */
+const PAGE_OPENING = /^\uFEFF?[ \t\r\n]*\{"/;
+const SCHEMA_KEY = /"schemaVersion":\d+[,}]/;
+const PAGE_ID_KEY = /"pageId":"/;
+
+function holdsPageKeys(text: string): boolean {
+	return PAGE_OPENING.test(text) && SCHEMA_KEY.test(text) && PAGE_ID_KEY.test(text);
+}
+
+function parsesAsJson(text: string): boolean {
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** `.damaged-`, `.conflict-`, `.superseded-`, `.flush-conflict-`: already
+ *  unambiguous by name (PageStore's own recovery-copy naming). */
+function hasRecoveryMarker(name: string): boolean {
+	return (
+		name.includes(".damaged-") ||
+		name.includes(".conflict-") ||
+		name.includes(".superseded-") ||
+		name.includes(".flush-conflict-")
+	);
 }
 
 export interface MigrationResult {
@@ -246,7 +339,38 @@ export async function migrateInkFolder(
 	if (!adapter.list) return { ...idle, unsupported: true };
 	if (!(await adapter.exists(from))) return idle;
 	const listing = await adapter.list(from);
-	const sidecars = listing.files.filter((f) => isSidecarFile(baseName(f)));
+	const sidecars: string[] = [];
+	for (const f of listing.files) {
+		const name = baseName(f);
+		if (!isSidecarFile(name)) continue;
+		// A BARE `.json` name is the one shape anything else could also have
+		// used - a folder shared with the user's own files. Every other
+		// shape this plugin produces (`.tmp`, `.flush`, or a recovery
+		// marker) is unambiguous by name alone and skips the read.
+		const bare = name.endsWith(".json") && !name.endsWith(".json.tmp") && !hasRecoveryMarker(name);
+		if (bare && adapter.read) {
+			let text: string;
+			try {
+				text = await adapter.read(f);
+			} catch {
+				continue; // unreadable: not ours to move, either way
+			}
+			// A user's own JSON parses, so page SHAPE decides. Text that does
+			// not parse moves only on positive evidence that it is ours: a
+			// name this plugin mints, or both page keys as the serializer
+			// writes them inside text that opens as an object. Then it
+			// is a truncated page of ours (PageStore leaves it at its bare
+			// name, locking the note, until a save renames it) and leaving it
+			// would strand the only copy in the old folder. Anything else is a
+			// foreign file and stays where it is, unrenamed and uncounted.
+			if (parsesAsJson(text)) {
+				if (!looksLikeOurPage(text)) continue;
+			} else if (!isMintedIdName(name) && !holdsPageKeys(text)) {
+				continue;
+			}
+		}
+		sidecars.push(f);
+	}
 	// The destination is created even when there is nothing to move, so the
 	// folder the completion notice names is a folder that exists.
 	await ensureFolder(adapter, to);

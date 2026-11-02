@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
 	attachEmbedInk,
+	embedInkChanged as embedInkChangedFor,
 	embedInkExtent,
+	embedInkFileOpened,
+	embedInkRenamed,
+	embedInkRepaintAll,
+	initEmbedInkRefresh,
 	embedInkLayerCount,
 	embedInkMarker,
 	embedInkNeedsPaint,
 	embedInkAnchor,
+	embedInkBounds,
 	embedInkRootFor,
 	embedInkRootIsEmbed,
 	embedInkScale,
@@ -69,6 +75,19 @@ describe("embedInkScale", () => {
 
 	it("has nothing to say about an empty layer", () => {
 		expect(embedInkScale(0, 0, 2)).toBe(1);
+	});
+
+	it("keeps a tall narrow page's backing store under the browser's per-side canvas limit (audit 189)", () => {
+		// About 10,000 lines of ink in an ordinary-width note: the area budget
+		// alone floors the scale at 0.25, and 0.25 * h still clears the
+		// browser's own per-side limit, so the canvas silently fails to size
+		// and every stroke in it vanishes from reading view and embeds.
+		const w = 700;
+		const h = 280_000;
+		const scale = embedInkScale(w, h, 3);
+		expect(w * scale).toBeLessThanOrEqual(65_000);
+		expect(h * scale).toBeLessThanOrEqual(65_000);
+		expect(scale).toBeGreaterThan(0); // still a picture, only softer
 	});
 });
 
@@ -222,6 +241,9 @@ describe("teardownEmbedInk", () => {
 	it("removes the canvas, the marker and our position patch", () => {
 		const root = fakeRoot();
 		attachEmbedInk(root as unknown as HTMLElement, "note.md", []);
+		// What paint records when it is the one that made a static root relative.
+		// Without it the inline `relative` is the host's own and stays.
+		root.attrs.set("data-handwriting-embed-position", "");
 		expect(embedInkLayerCount()).toBe(1);
 		root.removed.length = 0; // attach's own empty-canvas cleanup is not the subject
 
@@ -256,11 +278,26 @@ describe("teardownEmbedInk", () => {
 	});
 });
 
+/** A fake sizer for `embedInkAnchor`: offsets, and an optional `.mod-header` child. */
+type FakeSizer = {
+	offsetLeft: number;
+	offsetTop: number;
+	offsetParent: unknown;
+	querySelector: (sel: string) => { offsetHeight: number } | null;
+};
+
+function fakeSizer(offsetLeft: number, offsetTop: number, headerHeight?: number): FakeSizer {
+	return {
+		offsetLeft,
+		offsetTop,
+		offsetParent: null,
+		querySelector: (sel: string) =>
+			headerHeight !== undefined && sel.includes("mod-header") ? { offsetHeight: headerHeight } : null,
+	};
+}
+
 /** A root for `embedInkAnchor`: a class list and one optional child sizer. */
-function fakeAnchorRoot(
-	cls: string,
-	sizer: { offsetLeft: number; offsetTop: number; offsetParent: unknown } | null
-) {
+function fakeAnchorRoot(cls: string, sizer: FakeSizer | null) {
 	return {
 		classList: { contains: (c: string) => c === cls },
 		querySelector: (sel: string) => (sel.includes("markdown-preview-sizer") ? sizer : null),
@@ -269,7 +306,7 @@ function fakeAnchorRoot(
 
 describe("embedInkAnchor", () => {
 	it("offsets a reading view's layer by its sizer, so the ink does not move", () => {
-		const sizer = { offsetLeft: 32, offsetTop: 32, offsetParent: null as unknown };
+		const sizer = fakeSizer(32, 32);
 		const root = fakeAnchorRoot("markdown-preview-view", sizer);
 		sizer.offsetParent = root;
 		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 32, top: 32 });
@@ -283,14 +320,137 @@ describe("embedInkAnchor", () => {
 	it("keeps the last offset for a reading view that is not laid out", () => {
 		// `display: none` gives every offset the value 0, which is a real
 		// coordinate and not a missing one.
-		const root = fakeAnchorRoot("markdown-preview-view", {
-			offsetLeft: 0,
-			offsetTop: 0,
-			offsetParent: null,
-		});
+		const root = fakeAnchorRoot("markdown-preview-view", fakeSizer(0, 0));
 		expect(embedInkAnchor(root as unknown as HTMLElement)).toBeNull();
 	});
+
+	it("adds the sizer's own header height to top, so ink does not land under the inline title/properties (audit 18)", () => {
+		// Editor y=0 is `.cm-content`'s top, always below the header. The
+		// reading-view sizer's first section IS the header, so anchoring to
+		// the sizer's own top (no adjustment) put every stroke that high
+		// in the editor.
+		const sizer = fakeSizer(32, 100, 48);
+		const root = fakeAnchorRoot("markdown-preview-view", sizer);
+		sizer.offsetParent = root;
+		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 32, top: 148 });
+	});
+
+	it("a note with no inline title and no Properties (no header section) is unaffected", () => {
+		const sizer = fakeSizer(32, 100); // no header arg: querySelector(".mod-header") is null
+		const root = fakeAnchorRoot("markdown-preview-view", sizer);
+		sizer.offsetParent = root;
+		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 32, top: 100 });
+	});
+
+	it("keeps the header height while the renderer has detached the header section (audit 18)", () => {
+		// Deep in a long note the reading view detaches the header section and
+		// hands its height to the pusher's margin: the text stays put, so the
+		// anchor must too.
+		let attached = true;
+		const sizer = {
+			offsetLeft: 32,
+			offsetTop: 100,
+			offsetParent: null as unknown,
+			querySelector: (sel: string) => (attached && sel.includes("mod-header") ? { offsetHeight: 48 } : null),
+		};
+		const root = fakeAnchorRoot("markdown-preview-view", sizer);
+		sizer.offsetParent = root;
+		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 32, top: 148 });
+		attached = false;
+		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 32, top: 148 });
+	});
+
+	it("print: the layer starts at the first block below the file-name title, at the text's left (audit 18 print half)", () => {
+		// Obsidian's print container: a markdown-preview-view with NO sizer and
+		// padding round the text, the file-name h1 first, then the note's
+		// blocks, each in a div of its own. The padding edge is not the text's.
+		const root = fakePrintRoot();
+		const h1 = fakePrintChild(root, 32, 32, 44);
+		const first = fakePrintChild(root, 32, 76, 24);
+		root.kids.push(h1, first);
+		root.h1 = h1;
+		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 32, top: 76 });
+	});
+
+	it("print: with the file name off, the first block's top takes in the padding and its own margin", () => {
+		const root = fakePrintRoot();
+		root.kids.push(fakePrintChild(root, 32, 48, 24));
+		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 32, top: 48 });
+	});
+
+	it("print: our own layer and spacer are not the first block", () => {
+		const root = fakePrintRoot();
+		root.kids.push(fakePrintChild(root, 0, 0, 900, "handwriting-embed-ink"), fakePrintChild(root, 0, 0, 1, "handwriting-embed-scroll-reserve"), fakePrintChild(root, 20, 36, 24));
+		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 20, top: 36 });
+	});
+
+	it("print: the left is the text column's, read from the blocks' boxes, when a theme centres them", () => {
+		const root = fakePrintRoot(100);
+		const first = fakePrintChild(root, 32, 48, 24, undefined, 140);
+		root.kids.push(first, fakePrintChild(root, 32, 90, 24, undefined, 140));
+		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 40, top: 48 });
+	});
+
+	it("print: a title with no block under it puts the top at the title's bottom", () => {
+		const root = fakePrintRoot();
+		const h1 = fakePrintChild(root, 32, 32, 44);
+		root.kids.push(h1);
+		root.h1 = h1;
+		expect(embedInkAnchor(root as unknown as HTMLElement)).toEqual({ left: 32, top: 76 });
+	});
+
+	it("print: a container with neither a block nor a title, or not laid out, keeps the stylesheet's origin", () => {
+		expect(embedInkAnchor(fakePrintRoot() as unknown as HTMLElement)).toBeNull();
+		const hidden = fakePrintRoot();
+		const h1 = fakePrintChild(hidden, 0, 0, 0);
+		const block = fakePrintChild(hidden, 0, 0, 0);
+		h1.offsetParent = null;
+		block.offsetParent = null;
+		hidden.kids.push(h1, block);
+		hidden.h1 = h1;
+		expect(embedInkAnchor(hidden as unknown as HTMLElement)).toBeNull();
+	});
 });
+
+/**
+ * Obsidian's print container for `embedInkAnchor`: no sizer, children in
+ * order, the file-name title as `:scope > h1` when set. With `rectLeft` the
+ * root and its children answer `getBoundingClientRect`, so the column is read
+ * from their boxes; without it the column falls back to the block's offset.
+ */
+function fakePrintRoot(rectLeft?: number) {
+	const root = {
+		kids: [] as FakePrintChild[],
+		h1: null as FakePrintChild | null,
+		rectLeft,
+		clientLeft: 0,
+		classList: { contains: (c: string) => c === "markdown-preview-view" },
+		get children() { return root.kids; },
+		querySelector: (sel: string) => (sel === ":scope > h1" ? root.h1 : null),
+		getBoundingClientRect: rectLeft === undefined ? undefined : () => ({ left: rectLeft, width: 800 }),
+	};
+	return root;
+}
+
+interface FakePrintChild {
+	offsetLeft: number;
+	offsetTop: number;
+	offsetHeight: number;
+	offsetParent: unknown;
+	classList: { contains(c: string): boolean };
+	getBoundingClientRect?: () => { left: number; width: number };
+}
+
+function fakePrintChild(root: { rectLeft?: number }, offsetLeft: number, offsetTop: number, offsetHeight: number, cls?: string, rectLeft?: number): FakePrintChild {
+	return {
+		offsetLeft,
+		offsetTop,
+		offsetHeight,
+		offsetParent: root,
+		classList: { contains: (c: string) => c === cls },
+		getBoundingClientRect: root.rectLeft === undefined ? undefined : () => ({ left: rectLeft ?? root.rectLeft! + offsetLeft, width: 600 }),
+	};
+}
 
 describe("embedInkRootIsEmbed", () => {
 	it("recognizes an embed's content box", () => {
@@ -406,5 +566,210 @@ describe("embed min-height (the embed grows to hold ink that would otherwise cli
 		attachEmbedInk(root as unknown as HTMLElement, "note.md", []);
 		teardownEmbedInk();
 		expect(root.style.minHeight).toBe("500px");
+	});
+});
+
+describe("embedInkBounds - ink left of the text column is kept (audit 24)", () => {
+	it("moves the layer's origin left and widens it to cover a negative-x stroke", () => {
+		const b = embedInkBounds([strokeWithBBox(-40.5, 10, 30, 5), strokeWithBBox(20, 10, 60, 5)]);
+		expect(b.x).toBe(-41);
+		expect(b.w).toBe(121); // from -41 to 80
+		expect(b.y).toBe(0);
+	});
+});
+
+/**
+ * Registry hooks (audits 25, 118, 119). Zero strokes on purpose, as in the
+ * teardown suite: `paint` records its marker before it needs a canvas, so the
+ * marker attribute is the observable for "this root was (re)painted for this
+ * path at this revision".
+ */
+describe("embed ink registry hooks", () => {
+	const MARKER = "data-handwriting-embed-ink";
+	function root(classes: string[], inside?: { contains(n: unknown): boolean }) {
+		const attrs = new Map<string, string>();
+		return {
+			attrs,
+			isConnected: true,
+			classList: { contains: (c: string) => classes.includes(c) },
+			style: { position: "relative", removeProperty() {} },
+			querySelector: () => null,
+			getAttribute: (k: string) => attrs.get(k) ?? null,
+			setAttribute: (k: string, v: string) => void attrs.set(k, v),
+			removeAttribute: (k: string) => void attrs.delete(k),
+			ownerDocument: { defaultView: { addEventListener() {}, removeEventListener() {} } },
+			inside,
+		};
+	}
+
+	it("audit 25: repaintAll re-marks every shown root, though no note changed", () => {
+		teardownEmbedInk();
+		initEmbedInkRefresh(() => []);
+		const a = root(["markdown-preview-view"]);
+		const b = root(["markdown-embed-content"]);
+		attachEmbedInk(a as unknown as HTMLElement, "a.md", []);
+		attachEmbedInk(b as unknown as HTMLElement, "b.md", []);
+		const before = [a.attrs.get(MARKER), b.attrs.get(MARKER)];
+		embedInkRepaintAll();
+		expect(a.attrs.get(MARKER)).not.toBe(before[0]);
+		expect(b.attrs.get(MARKER)).not.toBe(before[1]);
+		teardownEmbedInk();
+	});
+
+	it("audit 118: a rename moves the layer and its revision to the new path", () => {
+		teardownEmbedInk();
+		initEmbedInkRefresh(() => []);
+		const r = root(["markdown-preview-view"]);
+		attachEmbedInk(r as unknown as HTMLElement, "old.md", []);
+		embedInkChangedFor("old.md");
+		embedInkChangedFor("old.md"); // revision 2
+		embedInkRenamed("old.md", "new.md");
+		// The revision travels (2) and the rename's own repaint bumps it (3): a
+		// counter that restarted at the new path would read 1 and could collide
+		// with a marker an earlier layer of that path already holds.
+		expect(r.attrs.get(MARKER)).toBe(embedInkMarker("new.md", 3));
+		// It answers to the new path now, and no longer to the old one.
+		const before = r.attrs.get(MARKER);
+		embedInkChangedFor("old.md");
+		expect(r.attrs.get(MARKER)).toBe(before);
+		embedInkChangedFor("new.md");
+		expect(r.attrs.get(MARKER)).not.toBe(before);
+		teardownEmbedInk();
+	});
+
+	it("audit 119: opening another note in a reading-view tab re-keys that tab's root only", () => {
+		teardownEmbedInk();
+		initEmbedInkRefresh(() => []);
+		const view = { contains: (n: unknown) => n === tab || n === embedInTab };
+		const tab = root(["markdown-preview-view"]);
+		const embedInTab = root(["markdown-embed-content"]);
+		const otherTab = root(["markdown-preview-view"]);
+		for (const r of [tab, embedInTab, otherTab]) attachEmbedInk(r as unknown as HTMLElement, "prev.md", []);
+		const marks = [tab, embedInTab, otherTab].map((r) => r.attrs.get(MARKER));
+		embedInkFileOpened(view as unknown as { contains(n: Node): boolean }, "empty.md");
+		expect(tab.attrs.get(MARKER)).not.toBe(marks[0]);
+		expect(tab.attrs.get(MARKER)?.includes("empty.md")).toBe(true);
+		expect(embedInTab.attrs.get(MARKER)).toBe(marks[1]);
+		expect(otherTab.attrs.get(MARKER)).toBe(marks[2]);
+		teardownEmbedInk();
+	});
+});
+
+/** A block in a rendered note: its class and where its border box sits on screen. */
+function fakeBlock(reads: { n: number }, left: number, width = 600, cls = "el-p") {
+	return {
+		classList: { contains: (c: string) => c === cls },
+		getBoundingClientRect: () => {
+			reads.n++;
+			return { left, width, right: left + width, top: 0, height: 20, bottom: 20 };
+		},
+	};
+}
+
+/** A reading view whose sizer has rendered blocks: offsets, the sizer's own rect, and its children. */
+function columnRoot(reads: { n: number }, offsetLeft: number, sizerLeft: number, blocks: unknown[]) {
+	const sizer = {
+		offsetLeft,
+		offsetTop: 32,
+		offsetParent: null as unknown,
+		children: blocks,
+		querySelector: () => null,
+		getBoundingClientRect: () => {
+			reads.n++;
+			return { left: sizerLeft, width: 600, right: sizerLeft + 600, top: 0, height: 600, bottom: 600 };
+		},
+	};
+	const root = fakeAnchorRoot("markdown-preview-view", sizer as unknown as FakeSizer);
+	sizer.offsetParent = root;
+	return root as unknown as HTMLElement;
+}
+
+describe("embedInkAnchor: the x origin is the text column's left edge, measured from the root", () => {
+	it("a sizer at 0 whose paragraph sits 380 in: the layer starts at 380", () => {
+		const reads = { n: 0 };
+		const root = columnRoot(reads, 0, 0, [fakeBlock(reads, 380)]);
+		expect(embedInkAnchor(root)?.left).toBe(380);
+	});
+
+	it("stock shape, the sizer is the column: the sizer's left, not doubled", () => {
+		const reads = { n: 0 };
+		const root = columnRoot(reads, 32, 376, [fakeBlock(reads, 376)]);
+		// The view itself on screen, 32 left of its sizer: a column measured
+		// from the view and not the sizer reads 64.
+		(root as unknown as { getBoundingClientRect: () => unknown }).getBoundingClientRect = () =>
+			({ left: 344, width: 664, right: 1008, top: 0, height: 600, bottom: 600 });
+		expect(embedInkAnchor(root)?.left).toBe(32);
+	});
+
+	it("a table wider than the column first, then a paragraph: the paragraph's left", () => {
+		const reads = { n: 0 };
+		const root = columnRoot(reads, 32, 376, [fakeBlock(reads, 376, 900, "el-table"), fakeBlock(reads, 414.1)]);
+		expect(embedInkAnchor(root)?.left).toBeCloseTo(70.1, 6);
+	});
+
+	it("only a header, a pusher and a zero-width child, never measured: the sizer's left as before", () => {
+		const reads = { n: 0 };
+		const root = columnRoot(reads, 32, 376, [
+			fakeBlock(reads, 300, 600, "mod-header"),
+			fakeBlock(reads, 300, 600, "markdown-preview-pusher"),
+			fakeBlock(reads, 700, 0),
+		]);
+		expect(embedInkAnchor(root)?.left).toBe(32);
+	});
+
+	it("Minimal with readable line length on: the layer lands under 1 px from the text, not 38.6 px left", () => {
+		// Measured in Minimal with readable line length on: view at 344, sizer offsetLeft 32 (rect 376), text at 414.1.
+		const reads = { n: 0 };
+		const root = columnRoot(reads, 32, 376, [fakeBlock(reads, 414.1)]);
+		const textFromRoot = 414.1 - 344;
+		expect(Math.abs((embedInkAnchor(root)?.left ?? 0) - textFromRoot)).toBeLessThan(1);
+	});
+
+	it("an embed whose text sits 24 px inside its content box: the layer starts 24 in, top unchanged", () => {
+		// An embed, measured in every theme: root at 444.7, text at 468.7.
+		const reads = { n: 0 };
+		const embed = {
+			classList: { contains: (c: string) => c === "markdown-embed-content" },
+			clientLeft: 0,
+			children: [fakeBlock(reads, 468.7)],
+			querySelector: () => null,
+			getBoundingClientRect: () => ({ left: 444.7, width: 514, right: 958.7, top: 0, height: 286, bottom: 286 }),
+		};
+		const at = embedInkAnchor(embed as unknown as HTMLElement);
+		expect(at?.left).toBeCloseTo(24, 6);
+		expect(at?.top).toBe(0);
+	});
+
+	it("an embed with a column it remembers looks nothing up inside itself on the next paint", () => {
+		// The embed's sizer is found by a descendant query, a walk of the
+		// embed; it runs only when the column is measured.
+		const reads = { n: 0 };
+		const deep = { n: 0 };
+		const embed = {
+			classList: { contains: (c: string) => c === "markdown-embed-content" },
+			clientLeft: 0,
+			children: [fakeBlock(reads, 468.7)],
+			querySelector: (sel: string) => {
+				if (!sel.startsWith(":scope")) deep.n++;
+				return null;
+			},
+			getBoundingClientRect: () => ({ left: 444.7, width: 514, right: 958.7, top: 0, height: 286, bottom: 286 }),
+		};
+		expect(embedInkAnchor(embed as unknown as HTMLElement)?.left).toBeCloseTo(24, 6);
+		deep.n = 0;
+		expect(embedInkAnchor(embed as unknown as HTMLElement)?.left).toBeCloseTo(24, 6);
+		expect(deep.n, "descendant queries on a paint of an embed with a memory").toBe(0);
+	});
+
+	it("bounded: a note of 500 blocks costs at most 9 rect reads on the first call and none on the next paint", () => {
+		const reads = { n: 0 };
+		const blocks = Array.from({ length: 500 }, () => fakeBlock(reads, 414.1));
+		const root = columnRoot(reads, 32, 376, blocks);
+		embedInkAnchor(root);
+		expect(reads.n, "rect reads on the first anchor call").toBeGreaterThan(0);
+		expect(reads.n, "rect reads on the first anchor call").toBeLessThanOrEqual(9);
+		reads.n = 0;
+		embedInkAnchor(root);
+		expect(reads.n, "rect reads on a paint of a root with a memory").toBe(0);
 	});
 });

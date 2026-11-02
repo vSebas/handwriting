@@ -3,6 +3,7 @@ import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fitScale } from "./noteViewportCameraModel";
+import { withoutLineAnchor } from "./storedInk";
 import { chromium, type Browser } from "playwright";
 import css from "../../styles.css?raw";
 declare const process: { env: Record<string, string | undefined> };
@@ -17,7 +18,7 @@ afterAll(async()=>{await browser?.close();if(process.env.HW_VIEWPORT_EVIDENCE)wr
 /**
  * Replaces `toEqual` on two `snap().layout` arrays (family 1: the `snap()`
  * producer, zoom via one button click to k .5, `overlay.cssScale` divisor -
- * see REVIEW-c789587d.md F1's note that production measures this back too,
+ * see the review note that production measures this back too,
  * though it does not bite at k .5 with an integer offset width). Measured
  * (gate-eb9e7239.log diff blocks, both cells): every differing entry is
  * exactly 0.015625 = 1/64 note px, x only, y always exactly equal - glyph-
@@ -49,7 +50,7 @@ it.each(["before","during"] as const)("mounted sync retains a lifted lasso selec
   expect(r.result.outcome,"retained selection must prevent premature shared-model adoption").toBe("held");
   expect(r.refused.b.selected,"adoption refusal must preserve the actual lifted lasso selection").toEqual(["seed-0"]);
   for(const id of ["a","b"]){
-   expect(r.refused[id].strokes).toEqual(r.before[id].strokes);
+   expect(withoutLineAnchor(r.refused[id].strokes)).toEqual(withoutLineAnchor(r.before[id].strokes));
    expect(r.refused[id].history).toBe(r.before[id].history);
    expect(r.refused[id].doc).toBe(r.before[id].doc);
   }
@@ -79,16 +80,16 @@ it.each(["before","during"] as const)("mounted sync preserves the same live pen 
   const r=await page.evaluate(p=>(window as any).mountedSyncAdmission("pen",p),phase);evidence.push(r);
   expect(errors).toEqual([]);expect(r.before.quiet).toEqual([true,true]);expect(r.busy.quiet).toEqual([true,false]);
   expect(r.result.outcome,"an uncommitted sibling gesture must prevent premature adoption").toBe("held");
-  for(const id of ["a","b"]){expect(r.refused[id].strokes).toEqual(r.before[id].strokes);expect(r.refused[id].history).toBe(r.before[id].history);}
+  for(const id of ["a","b"]){expect(withoutLineAnchor(r.refused[id].strokes)).toEqual(withoutLineAnchor(r.before[id].strokes));expect(r.refused[id].history).toBe(r.before[id].history);}
   expect(r.refused.accepts).toBe(0);expect(r.refused.notifications).toBe(0);expect(r.refused.notices).toEqual([]);
   expect(r.refused.preparations).toBe(phase==="during"?1:0);expect(r.refused.changed).toBe(true);
   expect(r.completed.b.strokes).toHaveLength(2);expect(r.completed.a.strokes).toEqual(r.completed.b.strokes);
-  expect(r.completed.b.strokes[0]).toEqual(r.before.b.strokes[0]);
+  expect(withoutLineAnchor(r.completed.b.strokes.slice(0,1))).toEqual(withoutLineAnchor(r.before.b.strokes.slice(0,1)));
   const stroke=r.completed.b.strokes[1],first=stroke.points[0],last=stroke.points.at(-1);
   expect(last.x-first.x,"same stroke retains contact before await and continuation afterwards").toBeCloseTo(50/r.pointScale,2);
   expect(last.y-first.y).toBeCloseTo(15/r.pointScale,2);
   expect(r.completed.b.history).toBe(r.before.b.history+1);
-  expect(r.undone.b.strokes).toEqual(r.before.b.strokes);expect(r.redone.b.strokes).toEqual(r.completed.b.strokes);
+  expect(withoutLineAnchor(r.undone.b.strokes)).toEqual(withoutLineAnchor(r.before.b.strokes));expect(r.redone.b.strokes).toEqual(r.completed.b.strokes);
   expect(r.released.queued).toBe(false);expect(r.released.quiet).toEqual([true,true]);expect(r.retry.outcome).toBe("adopted");
   for(const id of ["a","b"]){expect(r.after[id].strokes.map((s:any)=>s.id)).toEqual(["incoming"]);expect(r.after[id].paint.visible).toBeGreaterThan(0);}
   expect(r.recovery.some((copy:any)=>copy.ids.includes(stroke.id)),"committed local revision remains recoverable independently of incoming visibility").toBe(true);
@@ -106,7 +107,7 @@ it("mounted sync rejects a transient same-note pane joining and retiring during 
   expect(errors).toEqual([]);expect(r.before.quiet).toEqual([true,true]);expect(r.joined.quiet).toEqual([true,true,true]);expect(r.busy.quiet).toEqual([true,true]);
   expect(r.result.outcome,"the original quiet cohort cannot bless an attempt spanning a transient attached pane").toBe("held");
   expect(r.refused.accepts).toBe(0);expect(r.refused.notifications).toBe(0);expect(r.refused.changed).toBe(true);
-  for(const id of ["a","b"])expect(r.refused[id].strokes).toEqual(r.before[id].strokes);
+  for(const id of ["a","b"])expect(withoutLineAnchor(r.refused[id].strokes)).toEqual(withoutLineAnchor(r.before[id].strokes));
   expect(r.retry.outcome).toBe("adopted");expect(r.after.accepts).toBe(1);expect(r.after.changed).toBe(false);
   for(const id of ["a","b"]){expect(r.after[id].strokes.map((s:any)=>s.id)).toEqual(["incoming"]);expect(r.after[id].paint.visible).toBeGreaterThan(0);}
  }finally{await page.close();}
@@ -158,7 +159,7 @@ it.each(cases)("camera %s axis%s font%s cancel%s",async(zoom,axis,font,cancel)=>
   evidence.push(r);expect(pageErrors).toEqual([]);
   // The pin: the harness engine supports css zoom, and the overlay's own
   // cached gate agrees with it. A run where either is false is a different
-  // host form (no coverage here per ruling F1) and nothing below is claimed
+  // host form (no coverage here) and nothing below is claimed
   // for it.
   expect(r.engineZoom, "the harness engine supports css zoom").toBe(true);
   expect(r.hostZoom, "the overlay's host-form gate agrees with the engine").toBe(r.engineZoom);
@@ -169,8 +170,7 @@ it.each(cases)("camera %s axis%s font%s cancel%s",async(zoom,axis,font,cancel)=>
   // but NOT a re-wrap (wrapping changes a line's height, not the count), so
   // height is asserted per line beside the count; each line's top is asserted
   // unmoved. Measured 0 layout-px line-box top movement at every k/font/
-  // cancel arm tried (slate-artifacts/1.4.20/camera-font1-cancel-read/
-  // read-linebox.txt) - the 1/64 note-px bound below is tighter than
+  // cancel arm tried (a line-box read on 1.4.20) - the 1/64 note-px bound below is tighter than
   // CodeMirror's own LayoutUnit grid at k .25 (1/64 SCREEN px = 1/16 note px
   // there) and holds on this fixture only because both measured tops (the
   // padding top, and padding + line 0's height) land exactly on that grid at
@@ -215,7 +215,7 @@ it.each(cases)("camera %s axis%s font%s cancel%s",async(zoom,axis,font,cancel)=>
   expect(end.fling).toBe(false);expect(r.flingUpdates).toBeGreaterThan(0);
   if(cancel){expect(r.cancelled).toEqual({accepted:true,fling:false,assist:false,parole:null});expect(end.offset).toBe(r.cancelOffset);}
   else{
-   // s179 add.6: canvas on now (the zoom bar needs it live), so the glide decays on the canvas's own
+   // Canvas on now (the zoom bar needs it live), so the glide decays on the canvas's own
    // shorter tau, 200ms not Fling.ts's 325 (InlinePenRouter.ts CANVAS_FLING_TAU_MS, not exported).
    const ideal=-(lifted.velocity-end.velocity)*200;
    expect(ideal).toBeGreaterThan(20);expect(Math.abs(down.content-end.content-120-ideal)).toBeLessThan((r.flingUpdates+3)*.5*zoom+1);
@@ -251,14 +251,17 @@ it("real Fit frames saved separated ink within the zoom range, ignores empty gro
   expect(fitted.state.zoom).toBeLessThan(.3);expect(fitted.strokes).toHaveLength(2);
   const union={width:Math.max(...before.strokes.map((s:any)=>s.bbox.x+s.bbox.width))-Math.min(...before.strokes.map((s:any)=>s.bbox.x)),height:Math.max(...before.strokes.map((s:any)=>s.bbox.y+s.bbox.height))-Math.min(...before.strokes.map((s:any)=>s.bbox.y))};expect(fitted.state.zoom).toBeCloseTo(fitScale(union),10);
   for(const b of fitted.ink){expect(b.x).toBeGreaterThanOrEqual(-.5);expect(b.y).toBeGreaterThanOrEqual(-.5);expect(b.right).toBeLessThanOrEqual(640.5);expect(b.bottom).toBeLessThanOrEqual(480.5);}
-  expect(fitted.strokes).toEqual(before.strokes);expect(fitted.doc).toBe(before.doc);expect(fitted.writes).toBe(before.writes);expect(fitted.history).toBe(before.history);
+  expect(withoutLineAnchor(fitted.strokes)).toEqual(withoutLineAnchor(before.strokes));expect(fitted.doc).toBe(before.doc);expect(fitted.writes).toBe(before.writes);expect(fitted.history).toBe(before.history);
   expect(Math.max(...fitted.backings)).toBeLessThan(8_000_000);
   const grown=await page.evaluate(()=>(window as any).viewportFixture.growEmpty("far"));
   const again=await page.evaluate(()=>(window as any).viewportFixture.fit("far"));
   expect(again.state.zoom).toBe(fitted.state.zoom);for(let i=0;i<again.ink.length;i++)for(const axis of ["x","y","right","bottom"])expect(Math.abs(again.ink[i][axis]-fitted.ink[i][axis])).toBeLessThan(.1);
   for(let i=0;i<3;i++){await page.getByRole("button",{name:"Reset note zoom to 100%",exact:true}).click();await page.evaluate(()=>(window as any).viewportFixture.settle());await page.getByRole("button",{name:"Fit handwriting",exact:true}).click();await page.evaluate(()=>(window as any).viewportFixture.settle());}
   const repeated=await page.evaluate(()=>(window as any).viewportFixture.snap("far"));expect(repeated.extent).toEqual(grown.extent);
-  const reopened=await page.evaluate(()=>(window as any).viewportFixture.reopen("far"));expect(reopened.state.zoom).toBe(1);expect(reopened.strokes).toEqual(before.strokes);expect(reopened.writes).toBe(before.writes);
+  // Two arms (issue 9): a note never seen this session opens at 100 percent and the top (`before`,
+  // the first open); the same note reopened returns at the zoom it was left at, here the last Fit.
+  expect(before.state.zoom,"FIRST OPEN: a note never seen this session opens at 100 percent").toBe(1);expect(before.scroll.top,"FIRST OPEN: at the top").toBe(0);
+  const reopened=await page.evaluate(async()=>{const vf=(window as any).viewportFixture;await vf.reopen("far");await vf.settle();return vf.snap("far");});expect(reopened.state.zoom,"RETURN: the reopened note comes back at the zoom it was left at").toBeCloseTo(repeated.state.zoom,10);expect(withoutLineAnchor(reopened.strokes)).toEqual(withoutLineAnchor(before.strokes));expect(reopened.writes).toBe(before.writes);
   const refit=await page.evaluate(()=>(window as any).viewportFixture.fit("far"));expect(refit.state.zoom).toBe(fitted.state.zoom);
   const corners=await page.evaluate(()=>(window as any).viewportFixture.corners("far"));expect(corners.added).toBe(4);for(const error of corners.errors)for(const axis of error)expect(Math.abs(axis)).toBeLessThan(1);
  }finally{await page.close();}
@@ -373,16 +376,24 @@ it("a theme change during a real pen gesture is applied once after release",asyn
  }finally{await page.close();}
 });
 
+// Infinite canvas owns the touch pan from contact and still glides after the lift, as with it off.
 it.each([.5,1,2])("infinite canvas momentum policy at%s",async zoom=>{
  for(const axis of ["x","y"] as const)for(const mode of ["on","off","toggle","native","pen","pinch"]){
   const page=await browser.newPage({viewport:{width:700,height:540}});
   try {
    await page.setContent("<!doctype html><body></body>");await page.addStyleTag({content:css+readFileSync(fileURLToPath(new URL("./noteViewportCamera.css",import.meta.url)),"utf8")});await page.addScriptTag({content:script});
+   // The pan is read on screen: the content under the finger, from contact to lift. Scroll units differ
+   // with Infinite canvas on and off at the same zoom, so a scroll delta cannot say whether the page kept up.
+   await page.evaluate(axis=>{const w=window as any;w.__pan={};const at=()=>{const b=document.querySelector<HTMLElement>(".cm-content")!.getBoundingClientRect();return axis==="x"?b.left:b.top;};
+    window.addEventListener("pointerdown",e=>{if(e.pointerId===301)w.__pan.down=at();},true);
+    window.addEventListener("pointerup",e=>{if(e.pointerId===301)w.__pan.up=at();},true);},axis);
    const r=await page.evaluate(args=>(window as any).momentum(...args),[zoom,axis,mode]);
-   expect(r.lifted-r.before).toBeGreaterThan(80/zoom);expect(r.running).toBe(false);expect(r.settled).toBe(r.end);
+   const pan=await page.evaluate(()=>(window as any).__pan);
+   expect(pan.down-pan.up,`${axis} ${mode} the page moved with the finger on screen`).toBeGreaterThan(80);
+   expect(r.lifted).not.toBe(r.before);expect(r.running).toBe(false);expect(r.settled).toBe(r.end);
    if(mode==="off"){expect(r.started).toBe(true);expect(r.end).toBeGreaterThan(r.lifted);}
    else if(mode==="toggle"||mode==="pen"||mode==="pinch"){expect(r.started).toBe(true);expect(r.end).toBe(r.stopped);}
-   else {expect(r.started).toBe(false);expect(r.end).toBe(r.lifted);expect(r.touchAction).toBe("none");}
+   else {expect(r.started,`${axis} ${mode} glide starts under Infinite canvas`).toBe(true);expect(r.end,`${axis} ${mode} glide carries past the lift`).toBeGreaterThan(r.lifted);expect(r.touchAction).toBe("none");}
   } finally {await page.close();}
  }
 });
@@ -394,15 +405,25 @@ it("Chromium touch input pans without native coast; wheel scrolling remains avai
   await page.evaluate(()=>(window as any).nativeMomentumSetup());
   const cdp=await page.context().newCDPSession(page);
   for(const [type,n] of [["touchStart",380],["touchMove",340],["touchMove",300],["touchMove",260],["touchEnd",260]] as const){await cdp.send("Input.dispatchTouchEvent",{type,touchPoints:type==="touchEnd"?[]:[{x:300,y:n,id:1,radiusX:4,radiusY:4,force:.5}]});await page.waitForTimeout(25);}
-  const lifted=await page.evaluate(()=>(window as any).nativeMomentumState());expect(lifted.top).toBeGreaterThan(80);expect(lifted.fling).toBe(false);expect(lifted.touchAction).toBe("none");
-  await page.waitForTimeout(500);expect(await page.evaluate(()=>(window as any).nativeMomentumState())).toEqual(lifted);
-  await page.mouse.move(300,200);await page.mouse.wheel(30,100);await page.waitForTimeout(150);const wheel=await page.evaluate(()=>(window as any).nativeMomentumState());expect(wheel.top).toBeGreaterThan(lifted.top);
+  // The plugin's own glide may run after the lift and must stop; once it has, nothing else moves the page.
+  const lifted=await page.evaluate(()=>(window as any).nativeMomentumState());expect(lifted.top).toBeGreaterThan(80);
+  await page.waitForFunction(()=>!(window as any).nativeMomentumState().fling,undefined,{timeout:3000});
+  const rested=await page.evaluate(()=>(window as any).nativeMomentumState());
+  // A control only: headless Chromium does not coast CDP touch, so the touch-action check below is what catches a browser coast.
+  await page.waitForTimeout(500);expect(await page.evaluate(()=>(window as any).nativeMomentumState()),"no motion after the glide ends").toEqual(rested);
+  expect(lifted.touchAction).toBe("none");
+  await page.mouse.move(300,200);await page.mouse.wheel(30,100);await page.waitForTimeout(150);const wheel=await page.evaluate(()=>(window as any).nativeMomentumState());expect(wheel.top).toBeGreaterThan(rested.top);
   await cdp.detach();
  }finally{await page.close();}
 });
 
-it("uses the exact Infinite Canvas settings explanation",()=>{
- expect(readFileSync(fileURLToPath(new URL("../../src/main.ts",import.meta.url)),"utf8")).toContain('desc: "Scroll to the right or down infinitely. Momentum is turned off when this setting is toggled on."');
+// The wording is product copy that changes, so only the row is pinned: the setting exists,
+// drives the canvas key, and says something.
+it("lists the Infinite canvas setting with a description",()=>{
+ const tab=readFileSync(fileURLToPath(new URL("../../src/settings/HandwritingSettingTab.ts",import.meta.url)),"utf8");
+ const row=tab.match(/name:\s*"Infinite canvas",\s*desc:\s*"([^"]*)",\s*control:\s*\{\s*type:\s*"toggle",\s*key:\s*"extendCanvasWhileScrolling"\s*\}/);
+ expect(row,"the Infinite canvas toggle row").not.toBeNull();
+ expect((row![1] ?? "").trim().length).toBeGreaterThan(0);
 });
 
 

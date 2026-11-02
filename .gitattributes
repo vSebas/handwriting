@@ -4,3 +4,7 @@
 # hands checkout back with a CRLF tail (13565 -> 13566 bytes), which makes
 # check:site fail locally even though the committed blob is correct.
 docs/demo.js -text
+src/ink/Issue25CaptureLedger.fixture.json -text
+# Vitest writes snapshot files with LF; a CRLF checkout under core.autocrlf=true comes back from
+# every local test run rewritten to LF, and git then reports the unchanged file as modified.
+src/ink/__snapshots__/*.snap -text

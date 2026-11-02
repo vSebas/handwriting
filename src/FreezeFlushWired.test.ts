@@ -7,7 +7,8 @@ const ALL_TS = import.meta.glob("./**/*.ts", { query: "?raw", import: "default",
 	string
 >;
 
-const MAIN = codeOnly(ALL_TS["./main.ts"] ?? "");
+// flushOnHide lives in PluginLifecycle.ts and its registrations in PluginOnload.ts, both read here with main.ts.
+const MAIN = codeOnly([ALL_TS["./main.ts"] ?? "", ALL_TS["./PluginLifecycle.ts"] ?? "", ALL_TS["./PluginOnload.ts"] ?? ""].join("\n"));
 
 /**
  * The background-freeze drain is WIRED, not merely present.
@@ -17,7 +18,7 @@ const MAIN = codeOnly(ALL_TS["./main.ts"] ?? "");
  * unless something dispatches the writes synchronously first. `flushOnHide`
  * does that, and `PageStore.flushDispatch` has its own tests.
  *
- * WHAT NOBODY ASSERTED, until this file: that anything CALLS it. alanl-sl
+ * WHAT NOBODY ASSERTED, until this file: that anything CALLS it. A review
  * found the two `registerDomEvent` lines deletable with the whole suite
  * green - every surface's protection against a swipe-away losing the last
  * strokes, held in place by nothing but the fact that no one had deleted the
@@ -58,22 +59,22 @@ describe("the background-freeze flush is wired to the events that mean 'frozen'"
 		);
 	});
 
-	// And blur: desktop stays VISIBLE while the user alt-tabs to a terminal
-	// and commits the vault with git - the one moment a mid-debounce sidecar
-	// write must not still be pending, and one neither event above covers.
-	it("window blur drains as well", () => {
-		expect(MAIN, "main.ts no longer registers the blur flush").toContain(
-			'this.registerDomEvent(window, "blur", () => this.flushOnHide());'
-		);
-	});
-
 	it("and what they call still dispatches the pending writes", () => {
-		const at = MAIN.indexOf("private flushOnHide(): void {");
+		const at = MAIN.indexOf("function flushOnHide(this: HandwritingPlugin): void {");
 		expect(at, "flushOnHide is gone from main.ts").toBeGreaterThan(-1);
 		const end = MAIN.indexOf("\n\t}", at);
 		expect(end, "flushOnHide has no end in main.ts any more").toBeGreaterThan(at);
 		expect(MAIN.slice(at, end), "the drain must reach the store").toContain(
 			"this.store.flushDispatch()"
+		);
+	});
+
+	// And blur: desktop stays VISIBLE while the user alt-tabs to a terminal
+	// and commits the vault with git - the one moment a mid-debounce sidecar
+	// write must not still be pending, and one neither event above covers.
+	it("window blur drains as well", () => {
+		expect(MAIN, "PluginOnload.ts no longer registers the blur flush").toContain(
+			'this.registerDomEvent(window, "blur", () => this.flushOnHide());'
 		);
 	});
 });

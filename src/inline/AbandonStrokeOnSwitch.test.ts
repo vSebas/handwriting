@@ -22,7 +22,7 @@
  * The SAME abandoned-stroke shape had a second half this router-only fix
  * never touched (Orion, 2026-09, second report): `InkOverlay.penDown` calls
  * `stripPenDown` -> `MobileTools.setInking(true)` on the strip AND the
- * collapsed pill (styles.css `.is-inking`: opacity 0, visibility hidden - not
+ * collapsed pill (styles.css `.is-inking`: opacity 0, pointer-events none - not
  * merely invisible but unhit-testable) the instant a claimed pen gesture
  * starts, and only a normal pointerup's `cb.onPenUp` -> `InkOverlay.penUp` ->
  * `stripPenUp` -> `setInking(false)` puts it back. `abandonActiveStroke()`
@@ -40,7 +40,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InlinePenRouter } from "./InlinePenRouter";
-import { harness, installFakeWindow, penEvent } from "../../test/routerHarness";
+import { harness as baseHarness, installFakeWindow, penEvent } from "../../test/routerHarness";
 
 let uninstallWindow: () => void = () => {};
 beforeAll(() => {
@@ -48,6 +48,21 @@ beforeAll(() => {
 });
 afterAll(() => {
 	uninstallWindow();
+});
+
+/**
+ * Every router a test builds is disposed after it. Palm rejection reads every
+ * live router (one writing hand across panes), so a router left behind with a
+ * stroke still down would block the next test's touches.
+ */
+const built: InlinePenRouter[] = [];
+function harness(): ReturnType<typeof baseHarness> {
+	const h = baseHarness();
+	built.push(h.router);
+	return h;
+}
+afterEach(() => {
+	for (const r of built.splice(0)) r.dispose();
 });
 
 /** Mirrors `OWNERSHIP_TAIL_MS` in InlinePenRouter.ts, which does not export it. */

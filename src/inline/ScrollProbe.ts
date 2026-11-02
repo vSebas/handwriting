@@ -1,4 +1,5 @@
-import { DIAG_OFF_NOTE, diagnosticsEnabled } from "../diag/DiagSwitch";
+import { DIAG_OFF_NOTE, diagnosticsEnabled, setDiagnosticsRecordingHook } from "../diag/DiagSwitch";
+import { timerHost } from "../util/RuntimeScheduler";
 /**
  * Scroll/wheel probe: instrumentation for the touchpad-scroll dead zone.
  *
@@ -44,6 +45,13 @@ import { DIAG_OFF_NOTE, diagnosticsEnabled } from "../diag/DiagSwitch";
  *            and whether that bbox intersects the camera viewport at commit
  *            ("visible=NO on a stroke drawn under the nib" = the render path
  *            lost it, not the input path).
+ *
+ * The same scroll and repaint events also write a performance.mark each, so a
+ * Chromium trace taken on the device shows which scroll event asked for which
+ * repaint: "hw:scroll x=<scrollLeft> y=<scrollTop>" and "hw:repaint
+ * work=<all | n rect> band=<moved | still> x=<scrollLeft> y=<scrollTop>". They are
+ * written only while diagnostics record, from the same gated functions as
+ * the ring, so with the switch off they cost the boolean read and nothing else.
  */
 
 interface WheelEntry {
@@ -102,6 +110,25 @@ interface RepaintEntry {
 	locked: boolean;
 	driftX: number;
 	driftY: number;
+	/** What the frame painted: "all", or "<n> rect". Absent when the caller did not say. */
+	work?: string;
+	/** The ink band moved this frame. */
+	bandMoved?: boolean;
+	/** The band move carried its pixels (a blit and the uncovered strips) rather than moving the box bare. */
+	carried?: boolean;
+	/** Time inside syncCamera this frame, ms. */
+	syncCameraMs?: number;
+	/** Time inside paintCommittedWork this frame, ms. */
+	paintMs?: number;
+	/** What made the frame redraw the whole layer, "+"-joined (first, zoom, camera, damage); empty when it did not. */
+	allFrom?: string;
+	/** The camera now minus the camera the raster was painted with, note units; absent before the first paint. */
+	camDeltaX?: number;
+	camDeltaY?: number;
+	/** The frame baked a settled pan into the raster (which asks for the whole layer). */
+	panBaked?: boolean;
+	/** The damage queued for the frame before any promotion to a full redraw: "all" or "<n> rect". */
+	damageIn?: string;
 }
 
 interface ExtentEntry {
@@ -184,7 +211,74 @@ interface CommitEntry {
 	topEl: string;
 }
 
+/**
+ * One per stroke, at the lift, before the live layers are cleared: the scale
+ * the overlay measured, the scale its backing and live-canvas grids were built
+ * from, the backing, and the two live canvases' grids and backing sizes. A wet tile of
+ * 1 x 1 is off (every pen event drew into the full wet canvas); a tail the size
+ * of the band is a full-size layer.
+ */
+interface LayersEntry {
+	kind: "layers";
+	t: number;
+	cssScale: number;
+	rasterScale: number;
+	backing: number;
+	tileW: number;
+	tileH: number;
+	/** The wet tile's pixel grid; null = none, so no tile. */
+	tileGrid: number | null;
+	tailW: number;
+	tailH: number;
+	/** The tail's pixel grid; null = none, so no compact tile. */
+	tailGrid: number | null;
+	tailMode: string;
+	bandW: number;
+	bandH: number;
+	/** The window's devicePixelRatio at the lift; absent on an entry pushed without it. */
+	dpr?: number;
+}
+
+/**
+ * One per sidecar save that wrote: the synchronous part of the adapter's write call (from the call until it returns its
+ * promise; Node's writeFile encodes the string there) and of the read of the replaced file, ms; the text's length in UTF-16
+ * code units. readSyncMs is null when the save read nothing back.
+ */
+interface SaveEntry {
+	kind: "save";
+	t: number;
+	writeSyncMs: number;
+	readSyncMs: number | null;
+	len: number;
+}
+
+/**
+ * One per main-thread gap: the gap timer ran more than GAP_MS after it was due. start is when it was due, lenMs how late
+ * it ran, t when it ran. hidden: the window was hidden when it ran; Chromium slows a hidden window's timers on purpose,
+ * so that gap is the throttle, not the main thread.
+ */
+interface GapEntry {
+	kind: "gap";
+	t: number;
+	start: number;
+	lenMs: number;
+	hidden: boolean;
+}
+
+/** One per long task Chromium reports (50 ms or more on the main thread): its start, duration and name; t when it arrived. */
+interface LongTaskEntry {
+	kind: "longtask";
+	t: number;
+	start: number;
+	lenMs: number;
+	name: string;
+}
+
 type ProbeEntry =
+	| GapEntry
+	| LongTaskEntry
+	| SaveEntry
+	| LayersEntry
 	| WheelEntry
 	| ScrollEntry
 	| SchedEntry
@@ -201,6 +295,15 @@ let lastTouchAt = Number.NEGATIVE_INFINITY;
 let lastScrollLeft = 0;
 let lastScrollTop = 0;
 let pendingSchedAt: number | null = null;
+
+/** One user-timing mark, for the trace. Never throws: a page without the User Timing API just loses the marks. */
+function traceMark(name: string): void {
+	try {
+		performance.mark(name);
+	} catch {
+		// no User Timing: the ring still has the event
+	}
+}
 
 function push(e: ProbeEntry): void {
 	entries.push(e);
@@ -247,6 +350,7 @@ export function scrollProbeScroll(
 	duringStroke = false
 ): void {
 	if (!diagnosticsEnabled()) return;
+	traceMark(`hw:scroll x=${scrollLeft} y=${scrollTop}`);
 	const t = performance.now();
 	push({
 		kind: "scroll",
@@ -285,8 +389,28 @@ export function scrollProbeRepaint(g: {
 	locked: boolean;
 	driftX: number;
 	driftY: number;
+	/** What the frame painted: "all", or "<n> rect" for damage rects. Absent when the caller does not know. */
+	work?: string;
+	/** The ink band moved this frame. */
+	bandMoved?: boolean;
+	/** The band move carried its pixels. */
+	carried?: boolean;
+	/** Time inside syncCamera this frame, ms. */
+	syncCameraMs?: number;
+	/** Time inside paintCommittedWork this frame, ms. */
+	paintMs?: number;
+	/** What made the frame redraw the whole layer, "+"-joined; empty when it did not. */
+	allFrom?: string;
+	/** The camera now minus the painted camera, note units. */
+	camDeltaX?: number;
+	camDeltaY?: number;
+	/** The frame baked a settled pan into the raster. */
+	panBaked?: boolean;
+	/** The damage queued before any promotion to a full redraw. */
+	damageIn?: string;
 }): void {
 	if (!diagnosticsEnabled()) return;
+	traceMark(`hw:repaint work=${g.work ?? "?"} band=${g.bandMoved ? "moved" : "still"} x=${g.scrollLeft} y=${g.scrollTop}`);
 	const t = performance.now();
 	push({
 		kind: "repaint",
@@ -319,6 +443,81 @@ export function scrollProbePenDown(
 export function scrollProbeCommit(g: Omit<CommitEntry, "kind" | "t">): void {
 	if (!diagnosticsEnabled()) return;
 	push({ kind: "commit", t: performance.now(), ...g });
+}
+
+export function scrollProbeLayers(g: Omit<LayersEntry, "kind" | "t">): void {
+	if (!diagnosticsEnabled()) return;
+	push({ kind: "layers", t: performance.now(), ...g });
+}
+
+/** The page store reports each sidecar save's synchronous write and read costs (see SaveEntry). */
+export function scrollProbeSave(g: Omit<SaveEntry, "kind" | "t">): void {
+	if (!diagnosticsEnabled()) return;
+	push({ kind: "save", t: performance.now(), ...g });
+	traceMark(`hw:save write-sync=${g.writeSyncMs.toFixed(2)} read-sync=${g.readSyncMs === null ? "none" : g.readSyncMs.toFixed(2)} len=${g.len}`);
+}
+
+/**
+ * Main-thread gaps and long tasks, while diagnostics record. Gaps come from a timer chain, not requestAnimationFrame: a
+ * frame loop would ask Chromium for a frame at every vsync and so change the painting it is there to watch. The timer
+ * asks to run every GAP_TICK_MS; a run more than GAP_MS after it was due is a gap, from the due time for as long as it
+ * was late, so a block that began before the due time reads up to GAP_TICK_MS short. Cost while recording: about 100
+ * runs a second, each one clock read, one compare and one setTimeout. Long tasks come from Chromium's own
+ * PerformanceObserver where the runtime offers "longtask". With recording off neither exists: no timer, no observer,
+ * nothing allocated. DiagSwitch starts and stops both through the recording hook.
+ */
+const GAP_TICK_MS = 10;
+const GAP_MS = 20;
+let gapTimer: number | null = null;
+let gapDue = 0;
+let longTasks: PerformanceObserver | null = null;
+
+function gapTick(): void {
+	gapTimer = null;
+	if (!diagnosticsEnabled()) return;
+	const now = performance.now();
+	const late = now - gapDue;
+	if (late > GAP_MS) {
+		const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+		push({ kind: "gap", t: now, start: gapDue, lenMs: late, hidden });
+	}
+	gapDue = now + GAP_TICK_MS;
+	gapTimer = timerHost().setTimeout(gapTick, GAP_TICK_MS);
+}
+
+function mainThreadProbe(on: boolean): void {
+	if (!on) {
+		if (gapTimer !== null) timerHost().clearTimeout(gapTimer);
+		gapTimer = null;
+		longTasks?.disconnect();
+		longTasks = null;
+		return;
+	}
+	if (gapTimer === null) {
+		gapDue = performance.now() + GAP_TICK_MS;
+		gapTimer = timerHost().setTimeout(gapTick, GAP_TICK_MS);
+	}
+	if (
+		longTasks === null &&
+		typeof PerformanceObserver !== "undefined" &&
+		(PerformanceObserver.supportedEntryTypes ?? []).includes("longtask")
+	) {
+		longTasks = new PerformanceObserver((list) => {
+			if (!diagnosticsEnabled()) return;
+			const t = performance.now();
+			for (const e of list.getEntries()) {
+				push({ kind: "longtask", t, start: e.startTime, lenMs: e.duration, name: e.name });
+			}
+		});
+		longTasks.observe({ type: "longtask" });
+	}
+}
+
+setDiagnosticsRecordingHook(mainThreadProbe);
+
+/** The plugin's unload stops the probe's timer and observer; the recording switch is left as it is. */
+export function stopMainThreadProbe(): void {
+	mainThreadProbe(false);
 }
 
 
@@ -355,11 +554,19 @@ function fmtAge(ms: number): string {
 	return Number.isFinite(ms) ? `${ms.toFixed(0)}ms` : "never";
 }
 
-export function formatScrollProbe(): string {
+/** Exponent form: a camera move far under the two printed decimals still reads as a number. */
+function fmtCamDelta(dx: number | undefined, dy: number | undefined): string {
+	return dx === undefined || dy === undefined ? "-" : `(${dx.toExponential(2)},${dy.toExponential(2)})`;
+}
+
+export function formatScrollProbe(build?: { version: string; sourceTree: string }): string {
+	// sourceTree is the existing canonical build-input digest, or unverified
+	// for development builds. It is not a claim about a verified Git tree.
+	const header = `Handwriting scroll probe: version=${build?.version ?? "unknown"} build=${build?.sourceTree ?? "unverified"}`;
 	if (entries.length === 0) {
-		return diagnosticsEnabled()
-			? "Handwriting scroll probe: no samples. Scroll (touchpad and touchscreen), draw, then copy again."
-			: `Handwriting scroll probe: no samples. ${DIAG_OFF_NOTE}`;
+		return `${header}\n${diagnosticsEnabled()
+			? "no samples. Scroll (touchpad and touchscreen), draw, then copy again."
+			: `no samples. ${DIAG_OFF_NOTE}`}`;
 	}
 
 	// ---- summary ------------------------------------------------------------
@@ -385,6 +592,9 @@ export function formatScrollProbe(): string {
 	let commitsUnpainted = 0;
 	let maxCommitDrift = 0;
 	let downs = 0;
+	let layerStrokes = 0;
+	let tileOff = 0;
+	let tailFull = 0;
 	for (const e of entries) {
 		switch (e.kind) {
 			case "wheel":
@@ -422,6 +632,11 @@ export function formatScrollProbe(): string {
 			case "pendown":
 				downs++;
 				break;
+			case "layers":
+				layerStrokes++;
+				if (e.tileW <= 1 && e.tileH <= 1) tileOff++;
+				if (e.tailW >= e.bandW && e.tailH >= e.bandH) tailFull++;
+				break;
 			case "commit": {
 				commits++;
 				if (!e.visible) commitsInvisible++;
@@ -434,7 +649,8 @@ export function formatScrollProbe(): string {
 		}
 	}
 	const lines: string[] = [
-		`Handwriting scroll probe: ${entries.length} event(s)`,
+		header,
+		`${entries.length} event(s)`,
 		"",
 		"SUMMARY",
 		`  wheel events            : ${wheels}  (|deltaX| total ${wheelDx.toFixed(1)}, max ${wheelDxMax.toFixed(1)}, ctrl held on ${wheelCtrl})`,
@@ -446,6 +662,7 @@ export function formatScrollProbe(): string {
 		`  repaints                : ${repaints}  (max request→run wait ${repaintWaitMax.toFixed(1)}ms)`,
 		`  spacer/axis mutations   : ${extents}`,
 		`  pen-downs / commits     : ${downs} / ${commits}`,
+		`  live layers per stroke  : ${layerStrokes} stroke(s), wet tile off in ${tileOff}, tail full size in ${tailFull}`,
 		`  commits NOT intersecting the viewport at commit time: ${commitsInvisible}` +
 			(commitsInvisible > 0 ? "   *** accepted-but-invisible: render path ***" : ""),
 		"",
@@ -489,6 +706,11 @@ export function formatScrollProbe(): string {
 			case "repaint":
 				lines.push(
 					`${at}  repaint  +${e.waitedMs.toFixed(1)}ms  cam=(${e.camX.toFixed(2)},${e.camY.toFixed(2)}) docTop=${e.documentTop.toFixed(2)} contentLeft=${e.contentLeft.toFixed(2)} rect=(${e.rectLeft.toFixed(2)},${e.rectTop.toFixed(2)}) scale=${e.scale} scroll=(${e.scrollLeft},${e.scrollTop}) strokes=${e.strokesDrawn}` +
+						(e.work !== undefined
+							? ` work=${e.work} band=${e.bandMoved ? "moved" : "still"} carry=${e.carried ? "yes" : "no"} sync=${(e.syncCameraMs ?? 0).toFixed(2)}ms paint=${(e.paintMs ?? 0).toFixed(2)}ms` +
+								(e.allFrom !== undefined ? ` from=${e.allFrom || "-"} dcam=${fmtCamDelta(e.camDeltaX, e.camDeltaY)}` : "") +
+								(e.damageIn !== undefined ? ` bake=${e.panBaked ? "yes" : "no"} in=${e.damageIn}` : "")
+							: "") +
 						(e.locked
 							? `  LOCKED drift=(${e.driftX.toFixed(1)},${e.driftY.toFixed(1)})`
 							: "")
@@ -502,6 +724,14 @@ export function formatScrollProbe(): string {
 					`${at}  PENDOWN  client(${e.clientX.toFixed(1)},${e.clientY.toFixed(1)}) note(${e.noteX.toFixed(1)},${e.noteY.toFixed(1)}) cam=(${e.camX.toFixed(2)},${e.camY.toFixed(2)}) scroll=(${e.scrollLeft},${e.scrollTop}) rect=(${e.rectLeft.toFixed(2)},${e.rectTop.toFixed(2)}) canvas=${e.cssW.toFixed(0)}x${e.cssH.toFixed(0)} scale=${e.scale} spacer=(${e.spacerLeft},${e.spacerTop}) axisPatched=${e.axisPatched} scrollWH=${e.scrollWidth}x${e.scrollHeight} clientWH=${e.clientWidth}x${e.clientHeight} lastWheel=${fmtAge(e.sinceWheelMs)} lastScroll=${fmtAge(e.sinceScrollMs)}`
 				);
 				break;
+			case "layers":
+				lines.push(
+					`${at}  LAYERS   cssScale=${e.cssScale} raster=${e.rasterScale} backing=${e.backing} tile=${e.tileW}x${e.tileH} tileGrid=${e.tileGrid ?? "none"} tail=${e.tailW}x${e.tailH} tailGrid=${e.tailGrid ?? "none"} tailMode=${e.tailMode} band=${e.bandW}x${e.bandH}` +
+						(e.dpr !== undefined ? ` dpr=${e.dpr}` : "") +
+						(e.tileW <= 1 && e.tileH <= 1 ? "  tile OFF" : "") +
+						(e.tailW >= e.bandW && e.tailH >= e.bandH ? "  tail FULL" : "")
+				);
+				break;
 			case "commit":
 				lines.push(
 					`${at}  COMMIT   ${e.strokeId.slice(0, 8)} pts=${e.points} bbox=(${e.bboxX.toFixed(1)},${e.bboxY.toFixed(1)} ${e.bboxW.toFixed(1)}x${e.bboxH.toFixed(1)}) cam=(${e.camX.toFixed(2)},${e.camY.toFixed(2)}) scroll=(${e.scrollLeft},${e.scrollTop}) store=${e.storeCount}  visible=${e.visible ? "yes" : "NO ***"}` +
@@ -510,6 +740,17 @@ export function formatScrollProbe(): string {
 						`  wetPx=${e.wetPx} commitPx=${e.committedPx} sample=${e.sampleW.toFixed(0)}x${e.sampleH.toFixed(0)} clipped=${(e.clippedPct * 100).toFixed(0)}% top=${e.topEl}` +
 						(e.wetPx === 0 || e.committedPx === 0 ? "  *** UNPAINTED ***" : "")
 				);
+				break;
+			case "save":
+				lines.push(
+					`${at}  SAVE     write-sync=${e.writeSyncMs.toFixed(2)}ms read-sync=${e.readSyncMs === null ? "none" : `${e.readSyncMs.toFixed(2)}ms`} len=${e.len}`
+				);
+				break;
+			case "gap":
+				lines.push(`${at}  GAP      start=${(e.start - t0).toFixed(1)} len=${e.lenMs.toFixed(1)}ms` + (e.hidden ? " hidden" : ""));
+				break;
+			case "longtask":
+				lines.push(`${at}  LONGTASK start=${(e.start - t0).toFixed(1)} len=${e.lenMs.toFixed(1)}ms name=${e.name}`);
 				break;
 		}
 	}

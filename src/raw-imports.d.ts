@@ -8,8 +8,6 @@ declare module "*?raw" {
 	export default content;
 }
 
-declare module "*.wasm" { const bytes: Uint8Array; export default bytes; }
-
 /**
  * `import.meta.glob` with `?raw`: many files' text at once, keyed by
  * root-absolute path. The repo-wide form of the declaration above, and what

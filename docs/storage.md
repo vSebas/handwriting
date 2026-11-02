@@ -42,6 +42,13 @@ moving a note keeps its ink. Move the note to another vault without `.handwritin
 and the ink does not follow; the id stays in the frontmatter, so putting the
 sidecar back later reconnects it.
 
+A note's own paper background and Infinite Canvas choice are kept in its
+sidecar, not in its properties. Choosing one on a note you have never inked
+on writes the page id, the same one line the first stroke writes. Notes from
+earlier versions may still carry `handwriting-paper` or `handwriting-canvas`
+lines; they are still read, and each is removed the next time you change that
+choice on that note.
+
 Two other frontmatter keys exist and Handwriting does not add either on its
 own. `handwriting: page` marked a note for the canvas page view, which the
 plugin no longer has; a note carrying it opens as ordinary Markdown, and the
@@ -123,6 +130,10 @@ Stable fields, safe to depend on:
 - `textBoxes` and `images` (`id`, position, size, `z`) - written only by the
   canvas page view, which the plugin no longer has. The format still reads
   and writes both keys
+- `noteCanvas` (boolean, optional) and `notePaper` (`"none"`, `"lines"`,
+  `"grid"` or `"dots"`, optional): the note's own Infinite Canvas and paper
+  background choices. Absent means the note follows the global setting. A
+  value this build does not recognise is kept and written back as found
 
 Internal, and subject to change without a schema bump:
 
@@ -165,7 +176,7 @@ Handwriting flushes on unload, but Obsidian does not wait for the flush, so
 treat it as best effort.
 
 Pending writes are also flushed when the app is hidden or backgrounded and
-when the window loses focus — alt-tabbing to a terminal to commit the vault
+when the window loses focus - alt-tabbing to a terminal to commit the vault
 is exactly the moment a mid-debounce sidecar write must not still be pending.
 
 ## how a write happens
@@ -205,21 +216,6 @@ and then by a content stamp, because sync tools routinely preserve
 timestamps. If it changed, the other version is moved to
 `.handwriting/<id>.conflict-<mtime>.json`, your session's ink is written, and
 you are told, after the write lands rather than before.
-
-To keep that guard from firing on routine sync, a note that is reopened after
-its sidecar changed on disk adopts the disk version first (both revisions are
-preserved as recoverable siblings before the swap), the same way the live
-reload poll adopts a change that lands while the note is open and quiet.
-
-**Deferred design — per-stroke `modifiedAt`.** Divergent revisions converge by
-whole-file adoption plus fork preservation, never by per-stroke union (see
-`ForkResolution.ts`). A per-stroke modification stamp that would let a merge
-prefer newer geometry was considered and deferred: an older build round-trips
-the stamp verbatim through `unknownByObject` while itself moving the stroke,
-so "newer wins" would then prefer the wrong side with full confidence. If it
-is ever added it must be an optional `InkStroke` field, in `KNOWN_STROKE`,
-used only as a both-sides-present tie-breaker, and only once every writer in
-the fleet stamps it.
 
 ## duplicate notes
 

@@ -7,6 +7,7 @@ import { onInkChanged } from "./InkEvents";
 import type { InlineInkHost } from "./InlineInkStore";
 import { emptyPage, parsePage, serializePage, type ParseResult } from "../model/PageData";
 import type { InkStroke } from "../ink/Stroke";
+import { strokeSignature } from "../math/WholeNoteInk";
 
 let serial = 0;
 const paths = new Set<string>();
@@ -125,28 +126,27 @@ it.each([false, true])("replace with pieces=%s publishes one complete snapshot a
 	expect(r.overlay.repaintPath).toHaveBeenLastCalledWith(r.path);
 });
 
-it("removes only reviewed unchanged pen ink and restores it with editor undo", async () => {
-	const recognized = stroke("recognized"), unrelated = stroke("unrelated", 40);
-	const r = await rig([recognized, unrelated]);
-	r.overlay.selection.clear = vi.fn();
-	const expected = [{ id: recognized.id, signature: JSON.stringify(recognized) }];
-	expect(r.overlay.removeTranscribedInk(r.path, expected)).toBe(1);
-	expect(ids(r.strokes())).toEqual(["unrelated"]);
-	expect(r.published.at(-1)?.type).toBe("remove");
-	expect(r.run(undo)).toBe(true);
-	expect(ids(r.strokes())).toEqual(["recognized", "unrelated"]);
-	recognized.points[0]!.x = 3;
-	expect(() => r.overlay.removeTranscribedInk(r.path, expected)).toThrow("changed");
-});
-
-it.each(["empty-to-ink", "ink-to-empty", "same-id", "missing-removed"])("%s replacement publishes the final contents", async kind => {
+it.each(["empty-to-ink", "ink-to-empty", "same-id"])("%s replacement publishes the final contents", async kind => {
 	const original = stroke("original");
-	const r = await rig(kind === "empty-to-ink" || kind === "missing-removed" ? [] : [original]);
+	const r = await rig(kind === "empty-to-ink" ? [] : [original]);
 	const inserted = kind === "ink-to-empty" ? [] : [stroke(kind === "same-id" ? "original" : "inserted", 40)];
 	r.overlay.applyInkOp({ type: "replace", path: r.path,
 		removed: kind === "empty-to-ink" ? [] : [original], removedAt: [0], inserted, insertedAt: [0] });
 	boundary(r, ids(inserted));
 	if (inserted.length) expect(r.strokes()[0]).toBe(inserted[0]);
+});
+
+// Revised: this used to be the "missing-removed" row above, which put the inserted stroke in although the stroke
+// it replaces was not there. A replace now applies whole or not at all: with a removed stroke missing (another device
+// erased or split it and the sync poll adopted that), inserting lays ink over what is there, so nothing changes and
+// nothing is saved or announced. ReplaceWholeOrNothing.test.ts has the user's sequence.
+it("a replacement whose removed stroke is missing changes nothing and publishes nothing", async () => {
+	const r = await rig([]);
+	r.overlay.applyInkOp({ type: "replace", path: r.path,
+		removed: [stroke("original")], removedAt: [0], inserted: [stroke("inserted", 40)], insertedAt: [0] });
+	expect(ids(r.strokes())).toEqual([]);
+	expect(r.writes).toEqual([]);
+	expect(r.observed).toEqual([]);
 });
 
 it("replacement history follows rename and publishes only at the current path", async () => {
@@ -233,4 +233,33 @@ it("replacement replay during loading schedules only after the complete merge", 
 	await finish();
 	expect(r.writes).toHaveLength(1);
 	expect(ids(parsePage(r.writes[0]!.payload, r.pageId).data.strokes)).toEqual(["unrelated", "piece"]);
+});
+
+it("removes only reviewed unchanged pen ink and restores it with editor undo", async () => {
+	const recognized = stroke("recognized"), unrelated = stroke("unrelated", 40);
+	const r = await rig([recognized, unrelated]);
+	r.overlay.selection.clear = vi.fn();
+	const expected = [{ id: recognized.id, signature: JSON.stringify(recognized) }];
+	expect(r.overlay.removeTranscribedInk(r.path, expected)).toBe(1);
+	expect(ids(r.strokes())).toEqual(["unrelated"]);
+	expect(r.published.at(-1)?.type).toBe("remove");
+	// A stroke that changed since recognition is refused whole, nothing removed.
+	expect(() => r.overlay.removeTranscribedInk(r.path, [{ id: unrelated.id, signature: "stale" }]))
+		.toThrow("changed since recognition");
+	expect(ids(r.strokes())).toEqual(["unrelated"]);
+});
+
+it("a line anchor re-taken since recognition does not count as changed handwriting", async () => {
+	// Upstream's line anchors rewrite `lineAnchor` on stored strokes as the
+	// text around them is measured or edited - including the insertion of
+	// the transcription itself - so the check compares ink, not layout.
+	const recognized = stroke("recognized"), r = await rig([recognized, stroke("unrelated", 40)]);
+	r.overlay.selection.clear = vi.fn();
+	const expected = [{ id: recognized.id, signature: strokeSignature(recognized) }];
+	const stored = r.strokes().find(s => s.id === recognized.id)!;
+	stored.lineAnchor = { line: 3, y: 12, height: 20 } as unknown as InkStroke["lineAnchor"];
+	expect(() => r.overlay.validateTranscribedInk(r.path, expected)).not.toThrow();
+	// And removal by id alone, for the caller that validated a moment ago.
+	expect(r.overlay.removeInkByIds(r.path, [recognized.id])).toBe(1);
+	expect(ids(r.strokes())).toEqual(["unrelated"]);
 });

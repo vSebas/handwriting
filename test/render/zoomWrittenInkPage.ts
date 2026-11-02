@@ -10,11 +10,13 @@ import { setPenInk } from "../../src/inline/PenInk";
 import { emptyPage, parsePage, serializePage, type PageData } from "../../src/model/PageData";
 import { installObsidianDom } from "./obsidianDom";
 import { editorInfoField } from "./iphoneObsidianStub";
+import { withoutLineAnchor } from "./storedInk";
 import type { InkStroke } from "../../src/ink/Stroke";
 import { surfaceExtents, ScrollExpansionDemand } from "../../src/inline/SurfaceExtent";
 import { WetInkRenderer } from "../../src/ink/WetInkRenderer";
 import { TailRenderer } from "../../src/ink/TailRenderer";
 import { DEFAULT_PEN } from "../../src/ink/PenStyle";
+import { contentOriginLeft } from "../../src/inline/ContentOrigin";
 installObsidianDom();
 const path = "drift.md", id = "drift-page";
 let saved = "", loads = 0;
@@ -144,7 +146,11 @@ function blankLifecycle(){
 }
 async function layerVisual(action:string,zoom=.4){
  const overlay=overlayForPath(path)! as any;
- if(action==='setup'){overlay.commitCameraScale(zoom,{left:0,top:0});await settle();}
+ // The zoom stand-in (zoom settle design) is replaced by the sharp raster once its build is whole: the baseline is read after
+ // that swap, waiting at most 4 s, so a stand-in that is never released reads standInHeld true and the cell reds, never hangs.
+ let standInHeld=false;
+ if(action==='setup'){overlay.commitCameraScale(zoom,{left:0,top:0});await settle();const t0=performance.now();
+  while(overlay.standIn&&performance.now()-t0<4000)await new Promise<void>(r=>requestAnimationFrame(()=>r()));standInHeld=!!overlay.standIn;}
  if(action==='preview')overlay.hideBlankPinchLayers();
  if(action==='thin-gap-plant'){
   // Remove a middle segment only from the borrowed preview, keeping its wash.
@@ -152,10 +158,16 @@ async function layerVisual(action:string,zoom=.4){
   const x=(430-cam.x)*cam.zoom*dpr,y=(417-cam.y)*cam.zoom*dpr,w=60*cam.zoom*dpr,h=6*cam.zoom*dpr;
   ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(x,y,w,h);ctx.globalAlpha=Number(getComputedStyle(overlay.highlightCanvas).opacity);ctx.drawImage(overlay.highlightCanvas,x,y,w,h,x,y,w,h);ctx.restore();
  }
+ if(action.startsWith('shift-plant')){
+  // Move the whole borrowed preview right by 'shift-plant:<backing px>' (default 1): the same ink, off by that much.
+  const target=overlay.wetCanvas as HTMLCanvasElement,ctx=target.getContext('2d')!;
+  ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.globalCompositeOperation='copy';ctx.drawImage(target,Number(action.split(':')[1]??1),0);ctx.restore();
+ }
  if(action==='scaled-preview'){overlay.pinch('start',1,{x:30,y:10});overlay.pinch('move',zoom===.1?4:.25,{x:30,y:10});for(let i=0;i<3;i++)await new Promise<void>(r=>requestAnimationFrame(()=>r()));overlay.pinchScrollAt=performance.now()+60000;}
  if(action==='restore')overlay.restorePinchLayers();
  if(action==='tail')overlay.tail.drawSelectionBox(overlay.camera.snapshot,{x:overlay.camera.x+120,y:overlay.camera.y+120,width:80,height:60},'#ff0000');
  if(action==='tail-clear')overlay.tail.clearAll(overlay.cssWidth,overlay.cssHeight);
+ if(action==='tail-full')overlay.tail.restoreFullSurface();
  if(action==='wet'){const first={x:overlay.camera.x+100,y:overlay.camera.y+100,pressure:.8,t:0};overlay.wet.beginStroke(first);overlay.wet.appendPoint(overlay.camera.snapshot,DEFAULT_PEN,{...first,x:first.x+80,y:first.y+30,t:20});overlay.wet.appendPoint(overlay.camera.snapshot,DEFAULT_PEN,{...first,x:first.x+160,y:first.y+50,t:40});overlay.wet.finishStroke(overlay.camera.snapshot,DEFAULT_PEN);}
  if(action==='wet-clear')overlay.wet.clear(overlay.cssWidth,overlay.cssHeight);
  if(action==='repaint'){overlay.damage.addAll();overlay.repaint();}
@@ -177,7 +189,7 @@ async function layerVisual(action:string,zoom=.4){
  if(action==='background-restore'){canvases.forEach((c,i)=>c.style.visibility=overlay.visualSavedVisibility[i]);delete overlay.visualSavedVisibility;}
  const rect=overlay.committedCanvas.getBoundingClientRect(),sx=rect.width/overlay.cssWidth,sy=rect.height/overlay.cssHeight,cam=overlay.lastPaintCam;
  const thinArms=[{width:.5,y:420},{width:2,y:450}].map(arm=>({width:arm.width,x0:rect.left+(380-cam.x)*cam.zoom*sx,x1:rect.left+(540-cam.x)*cam.zoom*sx,y:rect.top+(arm.y-cam.y)*cam.zoom*sy}));
- return {thinArms,composite:overlay.pinchComposite,visible:canvases.map(c=>getComputedStyle(c).visibility),pixels:canvases.map(occupiedPixels),originalHashes:action==='setup'||action==='restore'?[rasterHash(overlay.highlightCanvas),rasterHash(overlay.committedCanvas)]:null,blank:[overlay.highlightBlank,overlay.highlightWet.provenBlank,overlay.committedBlank,overlay.wet.provenBlank,overlay.tail.provenBlank],strokes:JSON.stringify(inlineInk.strokes(path))};
+ return {thinArms,composite:overlay.pinchComposite,visible:canvases.map(c=>getComputedStyle(c).visibility),tailBacking:{w:overlay.tailCanvas.width,h:overlay.tailCanvas.height,bandW:overlay.wetCanvas.width,bandH:overlay.wetCanvas.height},pixels:canvases.map(occupiedPixels),originalHashes:action==='setup'||action==='restore'?[rasterHash(overlay.highlightCanvas),rasterHash(overlay.committedCanvas)]:null,blank:[overlay.highlightBlank,overlay.highlightWet.provenBlank,overlay.committedBlank,overlay.wet.provenBlank,overlay.tail.provenBlank],strokes:JSON.stringify(inlineInk.strokes(path)),standInHeld};
 }
 async function continuousPinch(target: number, cancel: boolean, measure = false, costPlant = false, diagnostic?: { startScale: number; hover: boolean; moving: boolean }) {
  const overlay=overlayForPath(path)! as any;
@@ -188,7 +200,9 @@ async function continuousPinch(target: number, cancel: boolean, measure = false,
  const cx=diagnostic?400:target<.5?60:400,cy=diagnostic?220:target<.5?40:220,startHalf=diagnostic?45:target<.5?40:100;
  view.scrollDOM.scrollLeft=160;view.scrollDOM.scrollTop=160;await settle();
  const before=snapshot(),column=view.contentDOM.offsetWidth;
- let live=true,backingWrites=0,liveClears=0,liveTransactions=0,finalTransactions=0;
+ // Whether the scroll above released the wet canvas (the pinch's composite then sizes it once at its start).
+ const wetReleasedBefore=(overlay as any).wetDeferred===true;
+ let live=true,backingWrites=0,wetBackingWrites=0,liveClears=0,liveTransactions=0,finalTransactions=0;
  const dimensions=()=>({scale:overlay.pinchScaleNow,grant:{...surfaceExtents.get(path)},band:{...overlay.band},canvases:[...view.dom.querySelectorAll('canvas')].map(c=>({width:c.width,height:c.height,cssWidth:c.style.width,cssHeight:c.style.height,transform:c.style.transform,visibility:c.style.visibility,rect:c.getBoundingClientRect().toJSON()})),native:{width:view.scrollDOM.clientWidth,height:view.scrollDOM.clientHeight,scrollWidth:view.scrollDOM.scrollWidth,scrollHeight:view.scrollDOM.scrollHeight}});
  const initialDimensions=measure?dimensions():null;
  const timing={firstMotionAt:0,firstPreviewAt:0,lastMoveAt:0,frameGaps:[] as number[],pointerMs:[] as number[],oracleMs:[] as number[],previews:[] as {scale:number;queueMs:number;workMs:number}[],methods:{} as Record<string,{calls:number;ms:number;maxMs:number;rectReads:number;rectMs:number}>,reserveCalls:0,cursorPaints:0,exitRestoreMs:[] as number[]};
@@ -239,7 +253,7 @@ async function continuousPinch(target: number, cancel: boolean, measure = false,
  };
  const canvasProto=HTMLCanvasElement.prototype;
  const descriptors=["width","height"].map(key=>[key,Object.getOwnPropertyDescriptor(canvasProto,key)!] as const);
- for(const [key,d] of descriptors)Object.defineProperty(canvasProto,key,{...d,set:function(value:number){if(live)backingWrites++;d.set!.call(this,value);}});
+ for(const [key,d] of descriptors)Object.defineProperty(canvasProto,key,{...d,set:function(value:number){if(live){backingWrites++;if(this===overlay.wetCanvas)wetBackingWrites++;}d.set!.call(this,value);}});
  const clear=CanvasRenderingContext2D.prototype.clearRect;
  CanvasRenderingContext2D.prototype.clearRect=function(...args:Parameters<typeof clear>){if(live&&(this===overlay.committedCtx||this===overlay.highlightCtx))liveClears++;return clear.apply(this,args);};
  try {
@@ -266,7 +280,7 @@ async function continuousPinch(target: number, cancel: boolean, measure = false,
   await settle();
   const rect=view.contentDOM.getBoundingClientRect(),a=anchor!;
   const viewport=view.scrollDOM.getBoundingClientRect();
-  return {timing:measure?timing:null,initialDimensions,liveDimensions,finalDimensions:measure?dimensions():null,backingWrites,liveClears,liveTransactions,finalTransactions,liveScale,liveAnchors,
+  return {timing:measure?timing:null,initialDimensions,liveDimensions,finalDimensions:measure?dimensions():null,backingWrites,wetBackingWrites,wetReleasedBefore,liveClears,liveTransactions,finalTransactions,liveScale,liveAnchors,
    pane:{width:pane.width,height:pane.height},viewport:{width:viewport.width,height:viewport.height},
    finalScale:overlay.pinchScaleNow,columnBefore:column,columnAfter:view.contentDOM.offsetWidth,
    anchorError:{x:rect.left+a.worldX*target-a.x,y:rect.top+a.worldY*target-a.y,boundaryX:boundaryX(target),boundaryY:boundaryY(target),naturalBoundaryX:naturalBoundaryX(target)},
@@ -287,6 +301,8 @@ async function pendingPinchPen(measured:boolean,cancel:boolean){
   const c=overlay.committedCanvas.getBoundingClientRect(),v=view.scrollDOM.getBoundingClientRect();
   let bluePixels=0;
   for(const canvas of view.dom.querySelectorAll("canvas")){
+   // A layer with no backing yet (the highlight pair before any highlighter use) holds no pixels, and getImageData refuses a 0 width.
+   if(canvas.width===0||canvas.height===0)continue;
    const data=canvas.getContext("2d")!.getImageData(0,0,canvas.width,canvas.height).data;
    for(let i=0;i<data.length;i+=4)if(data[i+3]!>10&&data[i+2]!>data[i]!+40&&data[i+2]!>data[i+1]!+10)bluePixels++;
   }
@@ -307,10 +323,25 @@ async function pendingPinchPen(measured:boolean,cancel:boolean){
  // itself, clamped into the pane, so the contact follows the note at any pan.
  const surface=overlay.committedCanvas.getBoundingClientRect(),pane=view.scrollDOM.getBoundingClientRect();
  const hx=Math.max(surface.left,pane.left)+60,hy=Math.max(surface.top,pane.top)+20;
- point("pointerdown",hx,hy);point("pointermove",hx+10,hy+5);
+ // CodeMirror's measure calls made by the contact itself, counted only inside the pointerdown's dispatch: a contact
+ // inside a zoom lift's first measure runs it once (InkOverlayLifecycle onViewportInput), any other runs none.
+ const measureCalls={held:0,plain:0},viewAny=view as unknown as {measure:(...a:unknown[])=>unknown},realMeasure=viewAny.measure;
+ let counting:null|"held"|"plain"=null;
+ viewAny.measure=function(this:unknown,...a:unknown[]){if(counting)measureCalls[counting]++;return realMeasure.apply(this,a);};
+ counting="held";point("pointerdown",hx,hy);counting=null;
+ // ABSOLUTE: the note point the text's DOM gives for the contact, read in the same synchronous block as the down,
+ // after its dispatch (the form of scrollColumnAnchorPage.ts expected). A drift common to both paths is invisible to
+ // the two-path compare; this leg sees it.
+ const domScale=view.dom.getBoundingClientRect().width/parseFloat(getComputedStyle(view.dom).width),domTop=view.contentDOM.getBoundingClientRect().top+parseFloat(getComputedStyle(view.contentDOM).paddingTop)*domScale;
+ const expected={x:(hx-contentOriginLeft(view.contentDOM)!)/domScale/(overlay.fontZoom||1),y:(hy-domTop)/domScale/(overlay.fontZoom||1),cssScale:overlay.cssScale};
+ point("pointermove",hx+10,hy+5);
  await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
  const held=coverage();point("pointerup",hx+20,hy+10);await settle();
- return {before,held,after:coverage(),stroke:snapshot().strokes.at(-1)};
+ const after=coverage(),stroke=snapshot().strokes.at(-1);
+ // A plain pen down: no lift waiting, so the contact runs no measure.
+ counting="plain";point("pointerdown",hx+40,hy+30);counting=null;point("pointerup",hx+50,hy+30);await settle();
+ viewAny.measure=realMeasure;
+ return {before,held,after,stroke,measureCalls,expected};
 }
 function focusSeed(){
  const page=emptyPage(id);page.surface="inline";
@@ -370,7 +401,7 @@ async function editorFocus(zoom:number,locked:boolean,focus:boolean){
  }
  await settle();
  const strokes=inlineInk.strokes(path),after=read();
- return {before,focused,blurred,refocused,after,error,oldUnchanged:JSON.stringify(strokes.slice(0,JSON.parse(old).length))===old,added:strokes.length-JSON.parse(old).length};
+ return {before,focused,blurred,refocused,after,error,oldUnchanged:JSON.stringify(withoutLineAnchor(strokes.slice(0,JSON.parse(old).length)))===withoutLineAnchor(old),added:strokes.length-JSON.parse(old).length};
 }
 function desktopPlatform(){Object.assign(Platform,{isMobile:false,isDesktop:true,isIosApp:false,isDesktopApp:true,isMobileApp:false,isPhone:false,isWin:true});}
 async function viewportOwnership(){

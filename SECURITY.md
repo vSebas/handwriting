@@ -2,7 +2,7 @@
 
 ## supported version
 
-Only the newest release of this fork (the version in `manifest.json`) is
+Handwriting v0.13.10 is the supported version. Only the newest release is
 supported.
 
 ## reporting a vulnerability
@@ -29,9 +29,10 @@ always be moved into the open later.
 
 ## scope
 
-Handwriting itself makes no internet requests. The realistic surface is what
-it reads and writes on disk, and what it does with content that comes from a
-note or a sidecar file.
+Handwriting itself makes no internet request on its own and has no accounts.
+The one upstream request is the bug-report window's Upload to developer
+button: it is sent only when you tap it, and it carries the report shown on
+screen.
 
 This fork adds optional Codex transcription, **off by default**. With the
 feature off, no server runs and no network requests are made. Enabled on a
@@ -40,7 +41,8 @@ on the local network at the configured port) and invokes the locally
 installed, signed-in Codex CLI; handwriting images leave the device only to
 that laptop and from there to the user's own Codex account. The token is
 stored in the plugin's `data.json`. Treat the bridge as trusted-network-only:
-do not expose its port beyond networks you trust.
+do not expose its port beyond networks you trust. The realistic surface is what it reads and writes on disk, and what it does
+with content that comes from a note or a sidecar file.
 
 ## no bug bounty
 

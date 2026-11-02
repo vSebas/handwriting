@@ -58,6 +58,19 @@ export interface InkOpIdentity {
 	pageId?: string;
 }
 
+/**
+ * Where each listed stroke sat, by its neighbours, when it was taken out:
+ * `next[i]` the first stroke after it that stayed, `prev[i]` the last one
+ * before it, null at either end. Putting a stroke back next to the
+ * neighbour it had keeps its depth when another pane has changed the list
+ * in between, which a recorded position number does not (it counts strokes
+ * that may no longer be there).
+ */
+export interface InkOpNeighbours {
+	next?: (string | null)[];
+	prev?: (string | null)[];
+}
+
 export type InkOp =
 	| ({
 			type: "add";
@@ -65,9 +78,23 @@ export type InkOp =
 			strokes: InkStroke[];
 			/** Insert positions for z-order restore; omitted = append. */
 			indices?: number[];
+	  } & InkOpIdentity &
+			InkOpNeighbours)
+	| ({ type: "remove"; path: string; strokes: InkStroke[]; indices: number[] } & InkOpIdentity & InkOpNeighbours)
+	/**
+	 * `from` is the first point of each listed stroke BEFORE this step, so a
+	 * move applies only to strokes that still stand where it expects them: a
+	 * move another pane has already undone, or one whose strokes another step
+	 * shifted, is not applied a second time or to a part.
+	 */
+	| ({
+			type: "move";
+			path: string;
+			strokeIds: string[];
+			dx: number;
+			dy: number;
+			from?: Array<{ x: number; y: number }>;
 	  } & InkOpIdentity)
-	| ({ type: "remove"; path: string; strokes: InkStroke[]; indices: number[] } & InkOpIdentity)
-	| ({ type: "move"; path: string; strokeIds: string[]; dx: number; dy: number } & InkOpIdentity)
 	/**
 	 * Partial erase (v0.13.13): strokes came out and their surviving pieces
 	 * went in, as ONE step. Undo has to put the original back and take the
@@ -181,6 +208,8 @@ export function invertInkOp(op: InkOp): InkOp {
 				pageId: op.pageId,
 				strokes: op.strokes,
 				indices: op.indices ?? [],
+				next: op.next,
+				prev: op.prev,
 			};
 		case "remove":
 			return {
@@ -190,6 +219,8 @@ export function invertInkOp(op: InkOp): InkOp {
 				pageId: op.pageId,
 				strokes: op.strokes,
 				indices: op.indices,
+				next: op.next,
+				prev: op.prev,
 			};
 		case "move":
 			return {
@@ -200,6 +231,7 @@ export function invertInkOp(op: InkOp): InkOp {
 				strokeIds: op.strokeIds,
 				dx: -op.dx,
 				dy: -op.dy,
+				from: op.from?.map((p) => ({ x: p.x + op.dx, y: p.y + op.dy })),
 			};
 		case "replace":
 			return {
@@ -212,6 +244,33 @@ export function invertInkOp(op: InkOp): InkOp {
 				inserted: op.removed,
 				insertedAt: op.removedAt,
 			};
+	}
+}
+
+/**
+ * Is this an ink step, including one a previous load of the plugin wrote?
+ *
+ * An update, or switching the plugin off and on with a note open, runs
+ * main.js again and defines a new `inkEffect` type, but the editor's history
+ * keeps the entries the old one wrote. Those can no longer be applied or
+ * inverted, and their undo changes nothing on the page; what it must not do is
+ * move the caret and scroll to where the caret was when that ink was drawn
+ * (audit 161). So the viewport guard below also knows an ink op by its shape.
+ */
+function isInkStep(effect: StateEffect<unknown>): boolean {
+	if (effect.is(inkEffect)) return true;
+	const op = effect.value as Record<string, unknown> | null;
+	if (!op || typeof op !== "object" || typeof op.path !== "string") return false;
+	switch (op.type) {
+		case "add":
+		case "remove":
+			return Array.isArray(op.strokes);
+		case "move":
+			return Array.isArray(op.strokeIds) && typeof op.dx === "number" && typeof op.dy === "number";
+		case "replace":
+			return Array.isArray(op.removed) && Array.isArray(op.inserted);
+		default:
+			return false;
 	}
 }
 
@@ -259,7 +318,7 @@ export function inkHistorySupport(): Extension {
 			else if (tr.docChanged) reason = "document-change";
 			else if (!(tr.isUserEvent("undo") || tr.isUserEvent("redo"))) reason = "non-history-transaction";
 			else if (tr.effects.length === 0) reason = "no-effects";
-			else if (!tr.effects.every((effect) => effect.is(inkEffect))) reason = "foreign-effects";
+			else if (!tr.effects.every(isInkStep)) reason = "foreign-effects";
 			if (reason) {
 				recordUndoObservation(undoTraceIdentityForView(update.view.dom), { phase: "transaction", guard: { decision: "skip", stage: "observed", reason } });
 				return;
@@ -267,7 +326,7 @@ export function inkHistorySupport(): Extension {
 		}
 		if (!diagnostic && (update.view.state !== update.state || update.transactions.length !== 1 || !tr ||
 			tr.docChanged || !(tr.isUserEvent("undo") || tr.isUserEvent("redo")) ||
-			tr.effects.length === 0 || !tr.effects.every((effect) => effect.is(inkEffect)))) return;
+			tr.effects.length === 0 || !tr.effects.every(isInkStep))) return;
 		// History bypasses transaction filters. Its effect-only undo still
 		// asks the view to reveal the old text caret, which may be pages away
 		// from the ink. Replace that pending scroll with the current viewport

@@ -6,8 +6,8 @@
  * router's two-finger pinch from 100 to 300 percent (Readable line length off, the regime where a two-line title
  * rewraps on the way in), plus lined paper. A one-line title that never rewraps is the control.
  *
- * s179: zoom mechanics, not the canvas-off refusal itself - mounted canvas ON (s179(2)) so the pinch still reaches
- * 300 percent once the canvas-off gate is restored; s78/s97's canvas-on settle laws apply (no centring, no fit
+ * Zoom mechanics, not the canvas-off refusal itself - mounted canvas ON so the pinch still reaches
+ * 300 percent once the canvas-off gate is restored; the ruling's canvas-on settle laws apply (no centring, no fit
  * window), which this file never asserted against in the first place.
  *
  * WHAT IS READ, PER FRAME, INSIDE THE FRAME: the lined paper's lattice origin as the stylesheet places it - the
@@ -141,10 +141,11 @@ window.titleRewrap = {
 };
 `;
 
-const PLANTS: { env: string; from: string; to: string }[] = [
-	{ env: "HW_PAPER_TITLE_PLANT_NO_PAN", from: "\t\tthis.writePaperPan();\n\t\tthis.writeInkLayerTransform();\n", to: "\t\tthis.writeInkLayerTransform();\n" },
-	{ env: "HW_PAPER_TITLE_PLANT_NO_REWRAP", from: "\t\t\tthis.paperRewrapY += dH;\n", to: "" },
-	{ env: "HW_PAPER_TITLE_PLANT_NO_SNAP_CARRY", from: "\t\tconst carry = this.pinchPreview ? this.paperSnapResidual : null;\n", to: "\t\tconst carry = null as { x: number; y: number } | null;\n" },
+const PAPER =/src[\\/]inline[\\/]InkOverlayPaperPinch\.ts$/, PAN = /src[\\/]inline[\\/]InkOverlayPanSettle\.ts$/;
+const PLANTS: { env: string; file: RegExp; from: string; to: string }[] = [
+	{ env: "HW_PAPER_TITLE_PLANT_NO_PAN", file: PAPER, from: "const x = (this.panX() + this.paperColumnDrift) * s - (carry?.x ?? 0), y = this.panY() * s + this.paperRewrapY - (carry?.y ?? 0);", to: "const x = this.paperColumnDrift * s - (carry?.x ?? 0), y = this.paperRewrapY - (carry?.y ?? 0);" },
+	{ env: "HW_PAPER_TITLE_PLANT_NO_REWRAP", file: PAN, from: "\t\t\tthis.paperRewrapY += dH;\n", to: "" },
+	{ env: "HW_PAPER_TITLE_PLANT_NO_SNAP_CARRY", file: PAPER, from: "\t\tconst carry = this.pinchPreview ? this.paperSnapResidual : null;\n", to: "\t\tconst carry = null as { x: number; y: number } | null;\n" },
 ];
 
 let browser: Browser, script: string;
@@ -158,9 +159,9 @@ beforeAll(async () => {
 	const b = await build({ stdin: { contents: PAGE, resolveDir: fileURLToPath(new URL(".", import.meta.url)), loader: "ts", sourcefile: "paperTitleRewrapPage.ts" },
 		bundle: true, write: false, format: "iife", platform: "browser", alias: { obsidian: fileURLToPath(new URL("./iphoneObsidianStub.ts", import.meta.url)) },
 		plugins: active.length ? [{ name: "paper-title-plants", setup(builder) {
-			builder.onLoad({ filter: /src[\\/]inline[\\/]InkOverlay\.ts$/ }, args => {
+			builder.onLoad({ filter: /src[\\/]inline[\\/](InkOverlay|InkOverlayPaperPinch|InkOverlayPanSettle)\.ts$/ }, args => {
 				let text = readFileSync(args.path, "utf8").replace(/\r\n/g, "\n");
-				for (const pl of active) {
+				for (const pl of active.filter(x => x.file.test(args.path))) {
 					if (text.split(pl.from).length !== 2) throw new Error(`${pl.env}: anchor not found once`);
 					text = text.replace(pl.from, pl.to);
 					planted++;
